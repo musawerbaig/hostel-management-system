@@ -1,0 +1,7 @@
+{
+  "name": "Hostela",
+  "description": "A professional, trustworthy student hostel marketplace connecting students, parents, and owners with admin moderation.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
