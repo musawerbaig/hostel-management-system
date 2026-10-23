@@ -57,6 +57,7 @@ export interface Hostel {
   rooms: Room[];
   whatsappNumber: string;
   status: 'pending' | 'approved' | 'rejected';
+  distanceKm?: number; // approx. distance from COMSATS Islamabad (Chak Shahzad campus)
 }
 
 export type UserRole = 'Student' | 'Owner' | 'Admin';
@@ -100,3 +101,6 @@ export interface TranslationSet {
   ruleBook: string;
   pendingApproval: string;
 }
+
+// Top-level screens of the single-page app (Phase 3 refactor).
+export type View = 'home' | 'details' | 'owner-dashboard' | 'admin-dashboard' | 'add-hostel' | 'login' | 'signup' | 'edit-hostel' | 'my-inquiries';
