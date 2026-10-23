@@ -1,35 +1,17 @@
 
-import { Hostel, Review, User, UserRole, Gender } from './types';
+import { Hostel, Review, User } from './types';
 
-// Mock Admins - 1 Main, 2 Co-Admins with Security PINs for MFA
-export const ADMINS = [
-  { email: 'admin@hostela.com', name: 'Main Admin', role: 'Admin', pin: '998877' },
-  { email: 'coadmin1@hostela.com', name: 'Co-Admin 1', role: 'Admin', pin: '112233' },
-  { email: 'coadmin2@hostela.com', name: 'Co-Admin 2', role: 'Admin', pin: '445566' }
-];
+// Phase 1 (security): the old hardcoded admin accounts + PINs were removed.
+// Admins are now real Firebase Auth accounts whose Firestore profile in
+// users/{uid} has role: 'Admin' (set manually in the Firebase console —
+// see README "Making the first admin"). Nothing secret belongs in this file.
 
-export const ADMIN_EMAILS = ADMINS.map(a => a.email);
-export const ADMIN_WHATSAPP = '923001112222'; // Primary Admin Contact
+// Placeholder support number used by the contact buttons until Phase 2
+// replaces them with the real per-owner inquiry flow.
+export const ADMIN_WHATSAPP = '923001112222';
 
-export const mockOwners: User[] = [
-  {
-    id: 'owner1',
-    email: 'owner1@example.com',
-    name: 'Sajid Khan',
-    role: 'Owner',
-    isApproved: true,
-    avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=sajid'
-  },
-  {
-    id: 'owner2',
-    email: 'owner2@example.com',
-    name: 'Zia Ahmed',
-    role: 'Owner',
-    isApproved: false, // New owner waiting for admin
-    avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=zia'
-  }
-];
-
+// Demo fallback listings shown only when Firestore has no hostels yet.
+// Phase 3 replaces these with real Islamabad / COMSATS-area seed data.
 export const mockHostels: Hostel[] = [
   {
     id: '1',
@@ -83,4 +65,4 @@ export const mockReviews: Review[] = [
   { id: 'r2', hostelId: '1', rating: 4, comment: 'Staff is very helpful.', date: '2023-11-01', isVerified: true, studentName: 'Sara L.' }
 ];
 
-export const isAdmin = (email: string) => ADMIN_EMAILS.includes(email.toLowerCase());
+export const isAdminUser = (user: User | null) => user?.role === 'Admin';

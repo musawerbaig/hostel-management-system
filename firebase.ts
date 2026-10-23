@@ -3,7 +3,11 @@ import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getAuth } from "firebase/auth";
 
-// Your exact keys from your image
+// Firebase web configuration for the hostela-5a2dc project.
+// A web config like this identifies the project; it is not a password.
+// Real protection comes from Firebase Authentication + the Firestore and
+// Storage security rules in this repo (firestore.rules / storage.rules).
+// Service-account keys or API keys for other services must NEVER be committed.
 const firebaseConfig = {
   apiKey: "AIzaSyCPi9GYVU7qOkSlXbhE0OYExnTg9GgYah8",
   authDomain: "hostela-5a2dc.firebaseapp.com",
