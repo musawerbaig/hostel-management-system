@@ -11,13 +11,31 @@ export interface Room {
 }
 
 export interface Review {
-  id: string;
+  id: string; // = inquiryId (one review per confirmed stay — enforced by Firestore rules)
   hostelId: string;
+  studentId: string;
+  inquiryId: string;
   rating: number;
   comment: string;
   date: string;
   isVerified: boolean;
   studentName?: string;
+}
+
+export type InquiryStatus = 'new' | 'contacted' | 'stayed' | 'closed';
+
+export interface Inquiry {
+  id: string;
+  hostelId: string;
+  hostelName: string;
+  ownerId: string;
+  studentId: string;
+  studentName: string;
+  studentPhone?: string;
+  message: string;
+  moveIn?: string;
+  status: InquiryStatus;
+  createdAt: string;
 }
 
 export interface Hostel {

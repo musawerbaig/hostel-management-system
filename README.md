@@ -54,5 +54,11 @@ Never commit `.env.local`, service-account keys, or passwords. `.env.example` sh
 ## Roadmap
 
 - **Phase 1 (done)** — remove secrets/PINs, real Firebase Auth + roles, security rules
-- **Phase 2** — real photo uploads (Firebase Storage), reviews saved to Firestore and gated, inquiry flow that reaches the owner (owner inbox + WhatsApp + email)
+- **Phase 2 (done)** — inquiry flow that reaches the owner, reviews saved to Firestore and gated, real photo uploads
 - **Phase 3** — split the monolithic `App.tsx` into pages/components, installed Tailwind (drop the CDN), Islamabad/COMSATS seed listings, sorting + distance, deploy to Firebase Hosting
+
+## Phase 2 — how the loop works
+
+1. **Inquiry (not booking).** On any listing, a signed-in student sends an inquiry (message, optional phone, optional move-in timing). It is stored in the `inquiries` collection with status `new` and appears in the owner's dashboard inbox. The owner moves it through `contacted` → `stayed` → `closed`; students track their own under **My Inquiries**. A WhatsApp-the-owner button sits alongside for direct chat.
+2. **Gated reviews.** Reviews live in the `reviews` collection and are public to read. Writing one requires an inquiry the owner marked `stayed` — the Firestore rules check the inquiry document server-side, and the review's document id **is** the inquiry id, so there is exactly one review per confirmed stay. No confirmed stay, no review.
+3. **Photo uploads.** The Add Hostel form uploads chosen photos to Firebase Storage (`hostel-photos/{ownerUid}/…`) before saving the listing. ⚠️ This project's Storage bucket activates only on the **Blaze plan**; until then the form offers to submit the listing without photos instead of failing silently.
