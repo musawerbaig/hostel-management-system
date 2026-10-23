@@ -2,9 +2,11 @@ import { db } from './firebase';
 import { collection, addDoc, getDocs, doc, updateDoc } from 'firebase/firestore';
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { translations } from './translations';
-import { Language, User, Hostel, Review, Gender, Room } from './types';
+import { Language, User, Hostel, Review, Gender, Room, Inquiry, InquiryStatus } from './types';
 import { mockHostels, mockReviews, ADMIN_WHATSAPP } from './store';
 import { signUpWithEmail, signInWithEmail, signOutUser, watchAuth } from './auth';
+import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview } from './services';
+import { uploadHostelPhotos } from './uploads';
 import { Button } from './components/Button';
 import { 
   Search, 
@@ -68,7 +70,32 @@ if (liveData.length > 0) {
     getLiveHostels();
   }, []);
   const [reviews, setReviews] = useState<Review[]>(mockReviews);
-  const [view, setView] = useState<'home' | 'details' | 'owner-dashboard' | 'admin-dashboard' | 'add-hostel' | 'login' | 'signup' | 'edit-hostel'>('home');
+  // Phase 2: reviews are persisted in Firestore (gated — see services.ts).
+  useEffect(() => {
+    (async () => {
+      try {
+        const live = await fetchAllReviews();
+        if (live.length > 0) setReviews(live);
+      } catch (error) {
+        console.error("Error fetching reviews:", error);
+      }
+    })();
+  }, []);
+  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+  useEffect(() => {
+    if (!user) { setInquiries([]); return; }
+    (async () => {
+      try {
+        const data = user.role === 'Admin' ? await fetchAllInquiries()
+          : user.role === 'Owner' ? await fetchInquiriesForOwner(user.id)
+          : await fetchInquiriesForStudent(user.id);
+        setInquiries(data);
+      } catch (error) {
+        console.error("Error fetching inquiries:", error);
+      }
+    })();
+  }, [user]);
+  const [view, setView] = useState<'home' | 'details' | 'owner-dashboard' | 'admin-dashboard' | 'add-hostel' | 'login' | 'signup' | 'edit-hostel' | 'my-inquiries'>('home');
   const [selectedHostel, setSelectedHostel] = useState<Hostel | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
@@ -94,8 +121,18 @@ if (liveData.length > 0) {
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState('');
 
-  // Image Upload State (Simulated for Firebase integration)
+  // Phase 2: inquiry form state
+  const [inquiryMessage, setInquiryMessage] = useState('');
+  const [inquiryPhone, setInquiryPhone] = useState('');
+  const [inquiryMoveIn, setInquiryMoveIn] = useState('');
+  const [inquiryBusy, setInquiryBusy] = useState(false);
+  const [inquirySent, setInquirySent] = useState(false);
+  useEffect(() => { setInquirySent(false); setInquiryMessage(''); }, [selectedHostel]);
+
+  // Image Upload State — previews for the UI plus the real File objects
+  // that Phase 2 uploads to Firebase Storage on submit.
   const [tempUploadedImages, setTempUploadedImages] = useState<string[]>([]);
+  const [tempImageFiles, setTempImageFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const t = translations[lang];
@@ -245,7 +282,9 @@ if (liveData.length > 0) {
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files) {
-      const newImages = Array.from(files).map((file: File) => URL.createObjectURL(file));
+      const fileArr = Array.from(files);
+      setTempImageFiles(prev => [...prev, ...fileArr]);
+      const newImages = fileArr.map((file: File) => URL.createObjectURL(file));
       setTempUploadedImages(prev => [...prev, ...newImages]);
     }
   };
@@ -263,21 +302,118 @@ if (liveData.length > 0) {
     }
   };
 
-  const handleStudentAddReview = (e: React.FormEvent) => {
+  // Phase 2: the inquiry behind the review form. A review is only possible
+  // for an inquiry the owner has marked 'stayed' (also enforced in rules).
+  const stayedInquiry = (user && selectedHostel)
+    ? inquiries.find(i => i.hostelId === selectedHostel.id && i.studentId === user.id && i.status === 'stayed')
+    : undefined;
+  const myReviewForSelected = stayedInquiry
+    ? reviews.find(r => r.inquiryId === stayedInquiry.id)
+    : undefined;
+
+  const handleStudentAddReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedHostel || !user || !reviewComment) return;
-    const newReview: Review = {
-      id: 'rev_' + Date.now(),
-      hostelId: selectedHostel.id,
-      rating: reviewRating,
-      comment: reviewComment,
-      date: new Date().toISOString().split('T')[0],
-      isVerified: true,
-      studentName: user.name
-    };
-    setReviews(prev => [newReview, ...prev]);
-    setReviewComment('');
-    alert("Thank you for your review!");
+    if (!selectedHostel || !user || !stayedInquiry || !reviewComment.trim()) return;
+    try {
+      const saved = await submitReview(stayedInquiry, user.name, reviewRating, reviewComment.trim());
+      setReviews(prev => [saved, ...prev.filter(r => r.id !== saved.id)]);
+      setReviewComment('');
+      alert("Thank you! Your verified review is now live.");
+    } catch (error) {
+      console.error("Review error:", error);
+      alert("Could not save your review — reviews open once the owner confirms your stay.");
+    }
+  };
+
+  const handleSubmitInquiry = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedHostel || !user || !inquiryMessage.trim()) return;
+    setInquiryBusy(true);
+    try {
+      const saved = await submitInquiry({
+        hostelId: selectedHostel.id,
+        hostelName: selectedHostel.name,
+        ownerId: selectedHostel.ownerId,
+        studentId: user.id,
+        studentName: user.name,
+        studentPhone: inquiryPhone.trim() || undefined,
+        message: inquiryMessage.trim(),
+        moveIn: inquiryMoveIn.trim() || undefined,
+      });
+      setInquiries(prev => [saved, ...prev]);
+      setInquirySent(true);
+    } catch (error) {
+      console.error("Inquiry error:", error);
+      alert("Could not send your inquiry. Check your connection and try again.");
+    } finally {
+      setInquiryBusy(false);
+    }
+  };
+
+  const handleInquiryStatus = async (id: string, status: InquiryStatus) => {
+    try {
+      await updateInquiryStatus(id, status);
+      setInquiries(prev => prev.map(i => i.id === id ? { ...i, status } : i));
+    } catch (error) {
+      console.error("Inquiry status error:", error);
+      alert("Failed to update the inquiry status.");
+    }
+  };
+
+  // Phase 2: the Add Hostel form really saves now — photos upload to
+  // Firebase Storage first (graceful fallback until Storage is activated).
+  const handleSubmitListing = async () => {
+    if (!user) {
+      alert('Create an owner account first — your listing will be saved under your own account.');
+      setView('signup');
+      return;
+    }
+    if (!newName.trim() || !newCity.trim()) {
+      alert("Please enter the hostel name and city first!");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      let photoUrls: string[] = [];
+      if (tempImageFiles.length > 0) {
+        try {
+          photoUrls = await uploadHostelPhotos(user.id, tempImageFiles);
+        } catch (err) {
+          console.error("Storage upload failed:", err);
+          const proceed = window.confirm("Photo storage isn't activated for this project yet, so photos can't be uploaded right now. Submit the listing without photos?");
+          if (!proceed) { setIsSubmitting(false); return; }
+        }
+      }
+      await addDoc(collection(db, "hostels"), {
+        name: newName.trim(),
+        city: newCity.trim(),
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        ownerId: user.id,
+        photos: photoUrls.length > 0 ? photoUrls : ['https://picsum.photos/seed/hostel/800/600'],
+        gender: 'Boys',
+        minRent: 10000,
+        maxRent: 10000,
+        admissionCharges: 0,
+        securityFee: 0,
+        address: '',
+        description: '',
+        rooms: [],
+        whatsappNumber: '',
+        isVerified: false
+      });
+      alert("Listing submitted for admin moderation. We'll verify it soon.");
+      setNewName('');
+      setNewCity('');
+      setTempUploadedImages([]);
+      setTempImageFiles([]);
+      setView(user.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard');
+    } catch (error) {
+      console.error("Firebase Error:", error);
+      alert("Error saving! Check your internet or Firebase Rules.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -304,6 +440,11 @@ if (liveData.length > 0) {
                 {user.role !== 'Student' && (
                   <Button variant="ghost" size="sm" onClick={() => setView(user.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard')} className="gap-2 text-xs">
                     <LayoutDashboard className="w-3 h-3" /> Dashboard
+                  </Button>
+                )}
+                {user.role === 'Student' && (
+                  <Button variant="ghost" size="sm" onClick={() => setView('my-inquiries')} className="gap-2 text-xs">
+                    <Mail className="w-3 h-3" /> My Inquiries
                   </Button>
                 )}
                 <div className="flex items-center gap-3 bg-gray-50 pl-1 pr-3 py-1 rounded-full border border-gray-200">
@@ -660,7 +801,13 @@ if (liveData.length > 0) {
                            ))}
                         </div>
                         
-                        {user?.role === 'Student' ? (
+                        {myReviewForSelected ? (
+                          <div className="mt-10 p-8 bg-green-50 rounded-[2rem] border border-green-100 text-center space-y-2">
+                            <CheckCircle className="w-8 h-8 text-green-500 mx-auto" />
+                            <p className="font-black text-green-800">You've reviewed this hostel</p>
+                            <p className="text-xs font-bold text-green-600">Thanks — your verified review is shown above.</p>
+                          </div>
+                        ) : stayedInquiry ? (
                           <form className="mt-10 p-8 bg-blue-50 rounded-[2rem] space-y-4 border border-blue-100" onSubmit={handleStudentAddReview}>
                             <h3 className="font-black text-blue-900">Post a Verified Review</h3>
                             <div className="flex gap-2">
@@ -668,8 +815,8 @@ if (liveData.length > 0) {
                                 <Star key={s} className={`w-8 h-8 cursor-pointer transition-all ${reviewRating >= s ? 'text-yellow-400 fill-current' : 'text-gray-200 hover:scale-110'}`} onClick={() => setReviewRating(s)} />
                               ))}
                             </div>
-                            <textarea 
-                              className="w-full p-5 rounded-2xl border-none text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white font-medium" 
+                            <textarea
+                              className="w-full p-5 rounded-2xl border-none text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white font-medium"
                               rows={4}
                               placeholder="Describe your stay experience..."
                               value={reviewComment}
@@ -677,6 +824,11 @@ if (liveData.length > 0) {
                             />
                             <Button fullWidth size="lg" className="rounded-2xl">Submit Review</Button>
                           </form>
+                        ) : user?.role === 'Student' ? (
+                          <div className="mt-10 p-8 border-2 border-dashed border-blue-200 bg-blue-50/50 rounded-[2rem] text-center">
+                            <p className="text-sm font-black text-blue-900 mb-2">Reviews unlock after your stay</p>
+                            <p className="text-xs font-medium text-blue-700 leading-relaxed">Send an inquiry from this page — once the owner confirms you stayed here, you can post a verified review. That's how Hostela keeps reviews honest.</p>
+                          </div>
                         ) : (
                           <div className="mt-10 p-8 border-2 border-dashed border-gray-200 rounded-[2rem] text-center">
                             <p className="text-sm font-bold text-gray-500 mb-4">{t.studentLogin}</p>
@@ -695,99 +847,99 @@ if (liveData.length > 0) {
                            <h3 className="text-4xl font-black text-blue-600 tracking-tighter">Rs. {selectedHostel.minRent.toLocaleString()}</h3>
                         </div>
                         <div className="space-y-4">
-                           <a href={`https://wa.me/${ADMIN_WHATSAPP}`} target="_blank" className="block">
-                              <Button 
-  fullWidth 
-  size="lg" 
-  disabled={isSubmitting} // Disables button while saving
-  className="rounded-2xl py-6 shadow-xl shadow-blue-100 text-lg flex gap-2" 
-  onClick={async () => {
-    try {
-      if (!newName || !newCity) {
-        alert("Please enter Name and City first!");
-        return;
-      }
-
-      setIsSubmitting(true); // Start loading
-
-      await addDoc(collection(db, "hostels"), {
-        name: newName,
-        city: newCity,
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        ownerId: user?.id || 'guest_owner',
-        photos: tempUploadedImages.length > 0 ? tempUploadedImages : ['https://picsum.photos/seed/hostel/800/600'],
-        gender: 'Boys',
-        minRent: 10000,
-        rooms: []
-      });
-
-      alert("Listing submitted successfully to Firebase!");
-      setNewName(''); 
-      setNewCity(''); 
-      setView('home');
-    } catch (error) {
-      console.error("Firebase Error:", error);
-      alert("Error saving! Check your internet or Firebase Rules.");
-    } finally {
-      setIsSubmitting(false); // Stop loading regardless of success or error
-    }
-  }}
->
-  {isSubmitting ? (
-    <>
-      <Zap className="w-5 h-5 animate-spin" /> Saving...
-    </>
-  ) : (
-    "Submit for Verification"
-  )}
-</Button>
-<Button 
-  fullWidth 
-  size="lg" 
-  className="rounded-2xl py-6 shadow-xl shadow-blue-100 text-lg" 
-  onClick={async () => {
-    try {
-      // Using the state variables (newName, newCity) instead of querySelector
-      if (!newName || !newCity) {
-        alert("Please enter Name and City first!");
-        return;
-      }
-
-      await addDoc(collection(db, "hostels"), {
-        name: newName,
-        city: newCity,
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        ownerId: user?.id || 'guest_owner',
-        photos: tempUploadedImages.length > 0 ? tempUploadedImages : ['https://picsum.photos/seed/hostel/800/600'],
-        gender: 'Boys',
-        minRent: 10000,
-        rooms: []
-      });
-
-      alert("Listing submitted successfully to Firebase!");
-      setNewName(''); // Clears the input field after success
-      setNewCity(''); // Clears the input field after success
-      setView('home');
-    } catch (error) {
-      console.error("Firebase Error:", error);
-      alert("Error saving! Ensure your Firebase Rules are set to 'true' in the browser.");
-    }
-  }}
->
-  Submit for Verification
-</Button>
-                           </a>
+                           {user && user.id === selectedHostel.ownerId ? (
+                             <div className="p-4 bg-blue-50 rounded-2xl text-center">
+                               <p className="text-xs font-bold text-blue-800 leading-relaxed">This is your listing. Student inquiries for it arrive in your dashboard.</p>
+                             </div>
+                           ) : inquirySent ? (
+                             <div className="p-5 bg-green-50 border border-green-100 rounded-2xl text-center space-y-2">
+                               <CheckCircle className="w-8 h-8 text-green-500 mx-auto" />
+                               <p className="font-black text-green-800">Inquiry sent!</p>
+                               <p className="text-xs font-bold text-green-600 leading-relaxed">The owner has your message and can contact you. Track replies under My Inquiries.</p>
+                             </div>
+                           ) : user ? (
+                             <form className="space-y-3" onSubmit={handleSubmitInquiry}>
+                               <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em]">Send an inquiry to the owner</p>
+                               <textarea
+                                 required
+                                 rows={3}
+                                 className="w-full p-4 rounded-2xl bg-gray-50 border-none text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                                 placeholder="Hi! I'm looking for a bed — is one available?"
+                                 value={inquiryMessage}
+                                 onChange={(e) => setInquiryMessage(e.target.value)}
+                               />
+                               <input
+                                 type="tel"
+                                 className="w-full p-4 rounded-2xl bg-gray-50 border-none text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                                 placeholder="Your phone / WhatsApp (optional)"
+                                 value={inquiryPhone}
+                                 onChange={(e) => setInquiryPhone(e.target.value)}
+                               />
+                               <input
+                                 type="text"
+                                 className="w-full p-4 rounded-2xl bg-gray-50 border-none text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                                 placeholder="Planning to move in — e.g. Nov 2026 (optional)"
+                                 value={inquiryMoveIn}
+                                 onChange={(e) => setInquiryMoveIn(e.target.value)}
+                               />
+                               <Button fullWidth size="lg" disabled={inquiryBusy} className="rounded-2xl py-5 shadow-xl shadow-blue-100">
+                                 {inquiryBusy ? 'Sending…' : 'Send Inquiry'}
+                               </Button>
+                             </form>
+                           ) : (
+                             <div className="text-center space-y-3">
+                               <p className="text-sm font-bold text-gray-500">Sign in to send an inquiry directly to the owner.</p>
+                               <Button fullWidth size="lg" className="rounded-2xl py-5" onClick={() => setView('login')}>Sign In to Inquire</Button>
+                             </div>
+                           )}
+                           {selectedHostel.whatsappNumber && user?.id !== selectedHostel.ownerId && (
+                             <a href={`https://wa.me/${selectedHostel.whatsappNumber}`} target="_blank" rel="noreferrer" className="block">
+                               <Button fullWidth variant="outline" size="lg" className="rounded-2xl py-4 flex gap-2">
+                                 <MessageCircle className="w-5 h-5" /> WhatsApp the owner
+                               </Button>
+                             </a>
+                           )}
                            <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-2xl">
                              <ShieldCheck className="w-6 h-6 text-blue-600 flex-shrink-0" />
-                             <p className="text-[10px] text-gray-500 font-bold uppercase leading-relaxed tracking-wider">Payments are processed only through verified Admin HQ for your safety.</p>
+                             <p className="text-[10px] text-gray-500 font-bold uppercase leading-relaxed tracking-wider">Inquiries go directly to the owner. Never pay in advance — visit first, then decide.</p>
                            </div>
                         </div>
                      </div>
                   </div>
                </div>
             </div>
+          </div>
+        )}
+
+        {view === 'my-inquiries' && user && (
+          <div className="max-w-4xl mx-auto py-12 px-4 animate-in fade-in duration-500">
+            <h2 className="text-4xl font-black text-gray-900 mb-2">My Inquiries</h2>
+            <p className="text-gray-500 font-medium mb-10">Hostels you've contacted — and what happens next.</p>
+            {inquiries.length === 0 ? (
+              <div className="p-10 bg-white rounded-[2rem] border-2 border-dashed border-gray-200 text-center">
+                <p className="font-bold text-gray-500 mb-4">You haven't sent any inquiries yet.</p>
+                <Button onClick={() => setView('home')} className="rounded-xl px-8">Browse Hostels</Button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {inquiries.map(inq => (
+                  <div key={inq.id} className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="font-black text-gray-900 text-lg">{inq.hostelName}</p>
+                      <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                        inq.status === 'new' ? 'bg-yellow-100 text-yellow-700' :
+                        inq.status === 'contacted' ? 'bg-blue-100 text-blue-700' :
+                        inq.status === 'stayed' ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
+                      }`}>
+                        {inq.status === 'new' ? 'Sent — waiting for owner' : inq.status === 'contacted' ? 'Owner contacted you' : inq.status === 'stayed' ? 'Stay confirmed — you can review!' : 'Closed'}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-600 italic">"{inq.message}"</p>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.moveIn ? ` • Moving in: ${inq.moveIn}` : ''}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -855,6 +1007,45 @@ if (liveData.length > 0) {
   </div>
 )}
 {/* --- END OF VERIFICATION DASHBOARD MODIFICATION --- */}
+                {(user?.role === 'Owner' || user?.role === 'Admin') && inquiries.length > 0 && (
+                  <div className="bg-white p-8 rounded-[2.5rem] border-2 border-blue-100 shadow-xl shadow-blue-50">
+                    <div className="flex items-center gap-3 mb-8">
+                      <div className="bg-blue-100 p-2 rounded-xl">
+                        <Mail className="w-6 h-6 text-blue-600" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-black text-gray-900">Student Inquiries</h3>
+                        <p className="text-sm text-gray-500 font-medium">{inquiries.length} total — contact the student, then mark the stay once they move in to unlock their review.</p>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      {inquiries.map(inq => (
+                        <div key={inq.id} className="p-5 bg-gray-50 rounded-2xl border border-gray-100 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="font-bold text-gray-900">{inq.studentName} <span className="text-gray-400 font-medium">→ {inq.hostelName}</span></p>
+                              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.studentPhone ? ` • ${inq.studentPhone}` : ''}{inq.moveIn ? ` • Move-in: ${inq.moveIn}` : ''}</p>
+                            </div>
+                            <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                              inq.status === 'new' ? 'bg-yellow-100 text-yellow-700' :
+                              inq.status === 'contacted' ? 'bg-blue-100 text-blue-700' :
+                              inq.status === 'stayed' ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
+                            }`}>{inq.status}</span>
+                          </div>
+                          <p className="text-sm text-gray-600 italic">"{inq.message}"</p>
+                          {inq.status !== 'closed' && (
+                            <div className="flex flex-wrap gap-2">
+                              {inq.status === 'new' && <Button size="sm" variant="secondary" className="rounded-xl" onClick={() => handleInquiryStatus(inq.id, 'contacted')}>Mark Contacted</Button>}
+                              {inq.status !== 'stayed' && <Button size="sm" className="rounded-xl" onClick={() => handleInquiryStatus(inq.id, 'stayed')}>Mark Stayed</Button>}
+                              {inq.status === 'stayed' && <span className="text-[10px] font-black text-green-600 uppercase tracking-widest self-center">Stay confirmed — this student can now review</span>}
+                              <Button size="sm" variant="danger" className="rounded-xl" onClick={() => handleInquiryStatus(inq.id, 'closed')}>Close</Button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                  {displayedHostels.map(h => (
 
                    <div key={h.id} className="bg-white p-6 md:p-8 rounded-[2.5rem] border border-gray-100 shadow-sm flex flex-col md:flex-row gap-8 items-start group">
@@ -1112,7 +1303,7 @@ if (liveData.length > 0) {
                        {tempUploadedImages.map((img, idx) => (
                          <div key={idx} className="relative aspect-square rounded-2xl overflow-hidden border-2 border-white shadow-sm">
                             <img src={img} className="w-full h-full object-cover" alt="" />
-                            <button className="absolute top-1 right-1 p-1 bg-red-600 text-white rounded-full" onClick={() => setTempUploadedImages(prev => prev.filter((_, i) => i !== idx))}>
+                            <button className="absolute top-1 right-1 p-1 bg-red-600 text-white rounded-full" onClick={() => { setTempUploadedImages(prev => prev.filter((_, i) => i !== idx)); setTempImageFiles(prev => prev.filter((_, i) => i !== idx)); }}>
                                <X className="w-3 h-3" />
                             </button>
                          </div>
@@ -1130,15 +1321,7 @@ if (liveData.length > 0) {
                  </div>
 
                  <div className="space-y-4">
-                    <Button fullWidth size="lg" className="rounded-2xl py-6 shadow-xl shadow-blue-100 text-lg" onClick={() => {
-                       if (user) {
-                         alert("Listing submitted for admin moderation. We'll verify your photos soon.");
-                         setView(user.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard');
-                       } else {
-                          alert('Create an owner account first — your listing will be saved under your own account.');
-                          setView('signup');
-                       }
-                    }}>Submit for Verification</Button>
+                    <Button fullWidth size="lg" disabled={isSubmitting} className="rounded-2xl py-6 shadow-xl shadow-blue-100 text-lg" onClick={handleSubmitListing}>{isSubmitting ? 'Submitting…' : 'Submit for Verification'}</Button>
                     <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] text-center">Registration requires Gmail ID verification</p>
                  </div>
               </div>

@@ -59,6 +59,53 @@ service cloud.firestore {
         || (isSignedIn() && resource.data.ownerId == request.auth.uid);
     }
 
+    // ---- Student inquiries (Phase 2) ----
+    match /inquiries/{inquiryId} {
+      // Visible only to the student who sent it, the hostel's owner, admins.
+      allow read: if isAdmin()
+        || (isSignedIn() && (resource.data.studentId == request.auth.uid
+            || resource.data.ownerId == request.auth.uid));
+      // A signed-in user inquires for themselves, only about an approved
+      // listing, and every inquiry starts life as 'new'.
+      allow create: if isSignedIn()
+        && request.resource.data.studentId == request.auth.uid
+        && request.resource.data.status == 'new'
+        && get(/databases/$(database)/documents/hostels/$(request.resource.data.hostelId)).data.status == 'approved'
+        && get(/databases/$(database)/documents/hostels/$(request.resource.data.hostelId)).data.ownerId == request.resource.data.ownerId;
+      // Only the owner (or an admin) moves an inquiry through its lifecycle,
+      // and may change nothing except the status.
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && resource.data.ownerId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+            && request.resource.data.status in ['contacted', 'stayed', 'closed']);
+      allow delete: if isAdmin();
+    }
+
+    // ---- Reviews (Phase 2 — gated, one per confirmed stay) ----
+    match /reviews/{reviewId} {
+      // Reviews are public — they power the listing pages.
+      allow read: if true;
+      // The document id IS the inquiry id, so one review per inquiry.
+      // Creation requires that inquiry to be marked 'stayed', to belong to
+      // the caller, and to be about the same hostel as the review.
+      allow create: if isSignedIn()
+        && request.resource.data.studentId == request.auth.uid
+        && request.resource.data.inquiryId == reviewId
+        && get(/databases/$(database)/documents/inquiries/$(reviewId)).data.status == 'stayed'
+        && get(/databases/$(database)/documents/inquiries/$(reviewId)).data.studentId == request.auth.uid
+        && get(/databases/$(database)/documents/inquiries/$(reviewId)).data.hostelId == request.resource.data.hostelId;
+      // Authors may edit the text/rating of their own review, never rebind
+      // it to another stay or hostel. Admins may moderate (delete).
+      allow update: if isSignedIn()
+        && resource.data.studentId == request.auth.uid
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.hostelId == resource.data.hostelId
+        && request.resource.data.inquiryId == resource.data.inquiryId;
+      allow delete: if isAdmin()
+        || (isSignedIn() && resource.data.studentId == request.auth.uid);
+    }
+
     // ---- Everything else is closed until its phase builds it ----
     match /{document=**} {
       allow read, write: if false;
