@@ -1,0 +1,67 @@
+rules_version = '2';
+
+// Hostela Firestore security rules — Phase 1.
+// Roles live in users/{uid} (written at sign-up by auth.ts).
+// These rules are the real security boundary — the frontend checks are only UX.
+// Deploy with: firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isAdmin() {
+      return isSignedIn() && profile().role == 'Admin';
+    }
+    function isApprovedOwner() {
+      return isSignedIn() && profile().role == 'Owner' && profile().isApproved == true;
+    }
+
+    // ---- User profiles ----
+    match /users/{uid} {
+      // You can read your own profile; admins can read all (owner approvals).
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      // At sign-up you may create ONLY your own profile, and never as Admin.
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role in ['Student', 'Owner'];
+      // You may edit your own profile but never your own role or approval.
+      allow update: if isAdmin()
+        || (isSignedIn() && request.auth.uid == uid
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.isApproved == resource.data.isApproved);
+      allow delete: if isAdmin();
+    }
+
+    // ---- Hostel listings ----
+    match /hostels/{hostelId} {
+      // Public can browse approved listings. Owners see their own at any
+      // status; admins see everything (the verification queue).
+      allow read: if resource.data.status == 'approved'
+        || (isSignedIn() && resource.data.ownerId == request.auth.uid)
+        || isAdmin();
+      // Only approved owners can submit, always as themselves, always
+      // starting at 'pending' — verification cannot be skipped.
+      allow create: if (isApprovedOwner() || isAdmin())
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.status == 'pending';
+      // Owners may edit their own listing, but cannot approve/reject it or
+      // hand it to someone else. Admins can do anything (moderation).
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && resource.data.ownerId == request.auth.uid
+            && request.resource.data.ownerId == resource.data.ownerId
+            && request.resource.data.status == resource.data.status);
+      allow delete: if isAdmin()
+        || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+    }
+
+    // ---- Everything else is closed until its phase builds it ----
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

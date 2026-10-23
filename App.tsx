@@ -3,7 +3,8 @@ import { collection, addDoc, getDocs, doc, updateDoc } from 'firebase/firestore'
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { translations } from './translations';
 import { Language, User, Hostel, Review, Gender, Room } from './types';
-import { mockHostels, mockReviews, ADMINS, ADMIN_WHATSAPP, mockOwners } from './store';
+import { mockHostels, mockReviews, ADMIN_WHATSAPP } from './store';
+import { signUpWithEmail, signInWithEmail, signOutUser, watchAuth } from './auth';
 import { Button } from './components/Button';
 import { 
   Search, 
@@ -66,9 +67,8 @@ if (liveData.length > 0) {
     };
     getLiveHostels();
   }, []);
-  const [owners, setOwners] = useState<User[]>(mockOwners);
   const [reviews, setReviews] = useState<Review[]>(mockReviews);
-  const [view, setView] = useState<'home' | 'details' | 'owner-dashboard' | 'admin-dashboard' | 'add-hostel' | 'admin-login' | 'edit-hostel'>('home');
+  const [view, setView] = useState<'home' | 'details' | 'owner-dashboard' | 'admin-dashboard' | 'add-hostel' | 'login' | 'signup' | 'edit-hostel'>('home');
   const [selectedHostel, setSelectedHostel] = useState<Hostel | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
@@ -80,12 +80,16 @@ if (liveData.length > 0) {
   const [genderFilter, setGenderFilter] = useState<Gender | 'All'>('All');
   const [maxRentFilter, setMaxRentFilter] = useState<number>(100000);
 
-  // Admin Login States (Stricter MFA)
-  const [adminLoginStep, setAdminLoginStep] = useState<'email' | 'mfa'>('email');
-  const [adminEmailInput, setAdminEmailInput] = useState('');
-  const [adminPinInput, setAdminPinInput] = useState('');
-  const [activeAdminProfile, setActiveAdminProfile] = useState<any>(null);
-  const [adminLoginError, setAdminLoginError] = useState('');
+  // Auth form state (Phase 1: real Firebase Auth — see auth.ts)
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authRole, setAuthRole] = useState<'Student' | 'Owner'>('Student');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+
+  // Keep the signed-in user in sync with the real Firebase session.
+  useEffect(() => watchAuth(setUser), []);
   
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState('');
@@ -103,75 +107,62 @@ if (liveData.length > 0) {
     return (sum / hostelReviews.length).toFixed(1);
   };
 
-  const handleOwnerLogin = () => {
-    setUser(owners[0]);
-    setView('owner-dashboard');
-    setIsMobileMenuOpen(false);
+  const friendlyAuthError = (err: unknown) => {
+    const code = (err as { code?: string })?.code ?? '';
+    if (code.includes('email-already-in-use')) return 'An account with this email already exists. Sign in instead.';
+    if (code.includes('invalid-credential') || code.includes('wrong-password') || code.includes('user-not-found')) return 'Email or password is incorrect.';
+    if (code.includes('weak-password')) return 'Password is too weak — use at least 6 characters.';
+    if (code.includes('invalid-email')) return 'That email address does not look valid.';
+    return 'Something went wrong. Check your connection and try again.';
   };
 
-  const handleStudentLogin = () => {
-    const mockStudent: User = {
-      id: 'std_' + Date.now(),
-      email: 'student@gmail.com',
-      name: 'Verified Student',
-      role: 'Student',
-      avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=student'
-    };
-    setUser(mockStudent);
+  const goAfterLogin = (profile: User) => {
     setIsMobileMenuOpen(false);
+    if (profile.role === 'Admin') setView('admin-dashboard');
+    else if (profile.role === 'Owner') setView('owner-dashboard');
+    else if (selectedHostel) setView('details');
+    else setView('home');
   };
 
-  const handleOwnerRegister = () => {
-    const mockNewOwner: User = {
-      id: 'owner_' + Date.now(),
-      email: 'newowner@gmail.com',
-      name: 'Hostel Partner',
-      role: 'Owner',
-      isApproved: false,
-      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=partner`
-    };
-    setUser(mockNewOwner);
-    setOwners(prev => [...prev, mockNewOwner]);
-    setView('owner-dashboard');
-    setIsMobileMenuOpen(false);
-  };
-
-  const handleAdminEmailSubmit = (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    const email = adminEmailInput.trim().toLowerCase();
-    const admin = ADMINS.find(a => a.email.toLowerCase() === email);
-    if (admin) {
-      setActiveAdminProfile(admin);
-      setAdminLoginStep('mfa');
-      setAdminLoginError('');
-    } else {
-      setAdminLoginError('Restricted Access: Unrecognized administrator email.');
+    setAuthError('');
+    setAuthBusy(true);
+    try {
+      const profile = await signInWithEmail(authEmail.trim(), authPassword);
+      setUser(profile);
+      setAuthPassword('');
+      goAfterLogin(profile);
+    } catch (err) {
+      setAuthError(friendlyAuthError(err));
+    } finally {
+      setAuthBusy(false);
     }
   };
 
-  const handleAdminMFASubmit = (e: React.FormEvent) => {
+  const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    const pin = adminPinInput.trim();
-    if (activeAdminProfile && pin === activeAdminProfile.pin) {
-      setUser({ 
-        id: 'admin_' + activeAdminProfile.email,
-        email: activeAdminProfile.email,
-        name: activeAdminProfile.name,
-        role: 'Admin',
-        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${activeAdminProfile.email}`
-      } as User);
-      setView('admin-dashboard');
-      setAdminLoginError('');
-      setAdminLoginStep('email');
-      setAdminEmailInput('');
-      setAdminPinInput('');
-      setActiveAdminProfile(null);
-    } else {
-      setAdminLoginError('Invalid Security PIN. Access denied.');
+    setAuthError('');
+    setAuthBusy(true);
+    try {
+      const profile = await signUpWithEmail(authName.trim(), authEmail.trim(), authPassword, authRole);
+      setUser(profile);
+      setAuthPassword('');
+      if (profile.role === 'Owner') {
+        alert('Owner account created. An admin will approve your account before your listings can go live.');
+        setView('owner-dashboard');
+      } else {
+        setView('home');
+      }
+    } catch (err) {
+      setAuthError(friendlyAuthError(err));
+    } finally {
+      setAuthBusy(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await signOutUser();
     setUser(null);
     setView('home');
     setIsMobileMenuOpen(false);
@@ -323,9 +314,9 @@ if (liveData.length > 0) {
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={handleOwnerLogin}>Owner Login</Button>
-                <Button variant="primary" size="sm" onClick={() => setView('add-hostel')} className="gap-2">
-                  <Plus className="w-4 h-4" /> Add Hostel
+                <Button variant="outline" size="sm" onClick={() => setView('login')}>Sign In</Button>
+                <Button variant="primary" size="sm" onClick={() => setView('signup')} className="gap-2">
+                  <Plus className="w-4 h-4" /> Create Account
                 </Button>
               </div>
             )}
@@ -341,7 +332,7 @@ if (liveData.length > 0) {
           <div className="md:hidden absolute top-16 left-0 right-0 bg-white border-b shadow-xl px-4 py-6 space-y-4 animate-in slide-in-from-top duration-200">
             <Button fullWidth variant="ghost" onClick={() => { setView('home'); setIsMobileMenuOpen(false); }}>Home</Button>
             <Button fullWidth variant="ghost" onClick={() => { setView('add-hostel'); setIsMobileMenuOpen(false); }}>{t.addHostel}</Button>
-            <Button fullWidth variant="ghost" onClick={() => { setView('admin-login'); setIsMobileMenuOpen(false); }}>Admin Access</Button>
+            <Button fullWidth variant="ghost" onClick={() => { setView('signup'); setIsMobileMenuOpen(false); }}>Create Account</Button>
             <div className="grid grid-cols-2 gap-4">
               <select value={lang} onChange={(e) => setLang(e.target.value as Language)} className="w-full border rounded-lg py-2 text-center font-bold">
                 <option value="en">English</option>
@@ -351,7 +342,7 @@ if (liveData.length > 0) {
               {user ? (
                 <Button fullWidth variant="danger" onClick={handleLogout} className="gap-2"><LogOut className="w-4 h-4" /> Logout</Button>
               ) : (
-                <Button fullWidth onClick={handleOwnerLogin}>Partner Login</Button>
+                <Button fullWidth onClick={() => { setView('login'); setIsMobileMenuOpen(false); }}>Sign In</Button>
               )}
             </div>
           </div>
@@ -689,9 +680,8 @@ if (liveData.length > 0) {
                         ) : (
                           <div className="mt-10 p-8 border-2 border-dashed border-gray-200 rounded-[2rem] text-center">
                             <p className="text-sm font-bold text-gray-500 mb-4">{t.studentLogin}</p>
-                            <Button variant="outline" size="sm" onClick={handleStudentLogin} className="rounded-xl px-8 flex items-center gap-2 mx-auto">
-                              <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" className="w-4 h-4" />
-                              Continue with Gmail
+                            <Button variant="outline" size="sm" onClick={() => setView('login')} className="rounded-xl px-8 flex items-center gap-2 mx-auto">
+                              Sign in to write a review
                             </Button>
                           </div>
                         )}
@@ -812,6 +802,12 @@ if (liveData.length > 0) {
               </div>
 
               <div className="grid grid-cols-1 gap-8">
+                {user?.role === 'Owner' && !user?.isApproved && (
+                  <div className="p-5 bg-yellow-50 border-2 border-yellow-100 rounded-2xl flex items-center gap-3">
+                    <AlertCircle className="w-6 h-6 text-yellow-600 flex-shrink-0" />
+                    <p className="text-sm font-bold text-yellow-800">Your owner account is waiting for admin approval. You can prepare listings, but they cannot go live until an admin approves your account.</p>
+                  </div>
+                )}
                 {/* --- START OF VERIFICATION DASHBOARD MODIFICATION --- */}
 {user?.role === 'Admin' && hostels.filter(h => h.status === 'pending').length > 0 && (
   <div className="mb-12 bg-white p-8 rounded-[2.5rem] border-2 border-yellow-100 shadow-xl shadow-yellow-50">
@@ -1139,7 +1135,8 @@ if (liveData.length > 0) {
                          alert("Listing submitted for admin moderation. We'll verify your photos soon.");
                          setView(user.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard');
                        } else {
-                          handleOwnerRegister();
+                          alert('Create an owner account first — your listing will be saved under your own account.');
+                          setView('signup');
                        }
                     }}>Submit for Verification</Button>
                     <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] text-center">Registration requires Gmail ID verification</p>
@@ -1148,75 +1145,91 @@ if (liveData.length > 0) {
            </div>
         )}
 
-        {view === 'admin-login' && (
+        {(view === 'login' || view === 'signup') && (
            <div className="max-w-md mx-auto py-24 px-4 animate-in zoom-in-95 duration-300">
               <div className="bg-white p-10 rounded-[3rem] border border-gray-100 shadow-2xl space-y-8 relative overflow-hidden">
                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-indigo-600"></div>
-                 
+
                  <div className="text-center space-y-2">
                    <div className="w-16 h-16 bg-gray-900 text-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-gray-200">
                      <ShieldCheck className="w-8 h-8" />
                    </div>
-                   <h2 className="text-2xl font-black">Admin HQ</h2>
-                   <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.3em]">Secure Multi-Factor Access</p>
+                   <h2 className="text-2xl font-black">{view === 'login' ? 'Welcome back' : 'Create your account'}</h2>
+                   <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.3em]">{view === 'login' ? 'Sign in to Hostela' : 'Students & hostel owners'}</p>
                  </div>
 
-                 {adminLoginStep === 'email' ? (
-                   <form onSubmit={handleAdminEmailSubmit} className="space-y-6">
+                 <form onSubmit={view === 'login' ? handleSignIn : handleSignUp} className="space-y-5">
+                    {view === 'signup' && (
                       <div className="space-y-2">
-                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Admin Email Address</label>
-                         <div className="relative">
-                            <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input 
-                               type="email" 
-                               required 
-                               className="w-full pl-11 pr-4 py-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all" 
-                               value={adminEmailInput} 
-                               onChange={(e) => setAdminEmailInput(e.target.value)} 
-                               placeholder="admin@hostela.com"
-                            />
-                         </div>
+                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Full Name</label>
+                         <input
+                            type="text"
+                            required
+                            className="w-full px-4 py-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                            value={authName}
+                            onChange={(e) => setAuthName(e.target.value)}
+                            placeholder="e.g. Ali Raza"
+                         />
                       </div>
-                      {adminLoginError && (
-                        <div className="p-3 bg-red-50 text-red-500 text-[10px] font-black uppercase tracking-widest rounded-xl flex items-center gap-2 border border-red-100 animate-pulse">
-                          <AlertCircle className="w-4 h-4" /> {adminLoginError}
-                        </div>
-                      )}
-                      <Button fullWidth className="rounded-2xl py-5 shadow-xl shadow-gray-200" size="lg">Verify Admin Email</Button>
-                   </form>
-                 ) : (
-                   <form onSubmit={handleAdminMFASubmit} className="space-y-6 animate-in slide-in-from-right duration-300">
-                      <div className="text-center p-4 bg-blue-50 rounded-2xl mb-4">
-                         <p className="text-xs font-bold text-blue-700">Verification required for {activeAdminProfile?.name}</p>
-                         <p className="text-[10px] text-blue-500 mt-1 uppercase">Step 2: Enter Secure Security PIN</p>
-                      </div>
+                    )}
+                    <div className="space-y-2">
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Email Address</label>
+                       <div className="relative">
+                          <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                          <input
+                             type="email"
+                             required
+                             className="w-full pl-11 pr-4 py-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                             value={authEmail}
+                             onChange={(e) => setAuthEmail(e.target.value)}
+                             placeholder="you@example.com"
+                          />
+                       </div>
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Password</label>
+                       <div className="relative">
+                          <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                          <input
+                             type="password"
+                             required
+                             minLength={6}
+                             className="w-full pl-11 pr-4 py-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                             value={authPassword}
+                             onChange={(e) => setAuthPassword(e.target.value)}
+                             placeholder="••••••••"
+                          />
+                       </div>
+                    </div>
+                    {view === 'signup' && (
                       <div className="space-y-2">
-                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Security PIN</label>
-                         <div className="relative">
-                            <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input 
-                               type="password" 
-                               required 
-                               maxLength={6}
-                               className="w-full pl-11 pr-4 py-4 bg-gray-50 border-none rounded-2xl font-black text-2xl tracking-[1em] text-center focus:ring-2 focus:ring-blue-500 outline-none" 
-                               value={adminPinInput} 
-                               onChange={(e) => setAdminPinInput(e.target.value)} 
-                               placeholder="••••••"
-                               autoFocus
-                            />
+                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">I am a</label>
+                         <div className="grid grid-cols-2 gap-3">
+                            <button type="button" onClick={() => setAuthRole('Student')} className={`py-3 rounded-2xl font-bold border-2 transition-all ${authRole === 'Student' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-500'}`}>Student</button>
+                            <button type="button" onClick={() => setAuthRole('Owner')} className={`py-3 rounded-2xl font-bold border-2 transition-all ${authRole === 'Owner' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-500'}`}>Hostel Owner</button>
                          </div>
+                         {authRole === 'Owner' && (
+                           <p className="text-[10px] text-gray-400 font-bold px-1">Owner accounts need admin approval before listings can go live.</p>
+                         )}
                       </div>
-                      {adminLoginError && (
-                        <div className="p-3 bg-red-50 text-red-500 text-[10px] font-black uppercase tracking-widest rounded-xl flex items-center gap-2 border border-red-100">
-                          <AlertCircle className="w-4 h-4" /> {adminLoginError}
-                        </div>
-                      )}
-                      <div className="flex gap-3">
-                         <Button type="button" variant="outline" className="flex-1 rounded-2xl" onClick={() => { setAdminLoginStep('email'); setAdminLoginError(''); }}>Back</Button>
-                         <Button className="flex-[2] rounded-2xl py-5 shadow-xl shadow-blue-200" size="lg">Authorize Entry</Button>
+                    )}
+                    {authError && (
+                      <div className="p-3 bg-red-50 text-red-500 text-[10px] font-black uppercase tracking-widest rounded-xl flex items-center gap-2 border border-red-100">
+                        <AlertCircle className="w-4 h-4" /> {authError}
                       </div>
-                   </form>
-                 )}
+                    )}
+                    <Button fullWidth className="rounded-2xl py-5 shadow-xl shadow-blue-200" size="lg" disabled={authBusy}>
+                      {authBusy ? 'Please wait…' : view === 'login' ? 'Sign In' : 'Create Account'}
+                    </Button>
+                 </form>
+
+                 <p className="text-center text-xs font-bold text-gray-400">
+                   {view === 'login' ? (
+                     <>New to Hostela? <button type="button" className="text-blue-600" onClick={() => { setView('signup'); setAuthError(''); }}>Create an account</button></>
+                   ) : (
+                     <>Already have an account? <button type="button" className="text-blue-600" onClick={() => { setView('login'); setAuthError(''); }}>Sign in</button></>
+                   )}
+                 </p>
               </div>
            </div>
         )}
@@ -1251,9 +1264,9 @@ if (liveData.length > 0) {
               <button 
                 type="button" 
                 className="hover:text-blue-600 transition-colors font-bold text-gray-600" 
-                onClick={(e) => { e.preventDefault(); setView('admin-login'); }}
+                onClick={(e) => { e.preventDefault(); setView('login'); }}
               >
-                Admin Login
+                Sign In
               </button>
             </div>
           </div>
