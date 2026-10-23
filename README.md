@@ -55,7 +55,15 @@ Never commit `.env.local`, service-account keys, or passwords. `.env.example` sh
 
 - **Phase 1 (done)** — remove secrets/PINs, real Firebase Auth + roles, security rules
 - **Phase 2 (done)** — inquiry flow that reaches the owner, reviews saved to Firestore and gated, real photo uploads
-- **Phase 3** — split the monolithic `App.tsx` into pages/components, installed Tailwind (drop the CDN), Islamabad/COMSATS seed listings, sorting + distance, deploy to Firebase Hosting
+- **Phase 3 (done)** — `App.tsx` split into components, Tailwind installed (CDN dropped), Islamabad/COMSATS seed listings + sorting, Firebase Hosting deploy
+
+## Phase 3 — structure & launch prep
+
+- **Components** (`components/`): `Navbar`, `Footer`, `HostelCard`, `ReviewsSection`, `InquiryPanel`, `InquiriesInbox`, `MyInquiriesView` were extracted from the old 1,400-line `App.tsx`, which now just orchestrates state and screens.
+- **Tailwind CSS v4** is installed and built locally (`@tailwindcss/vite` + `index.css`); the Play CDN script and the esm.sh import map were removed from `index.html`.
+- **Seed data** (`seed.ts`): 12 demo listings around COMSATS Islamabad (Chak Shahzad, Shahzad Town, Tarlai, Khanna Pul, H-9, I-10…) with approximate `distanceKm` from campus. An admin sees **Load Islamabad Demo Listings** on the dashboard — it creates and approves them in Firestore, skipping names that already exist. Demo listings use generic names and placeholder phone numbers; replace them with real, verified owners before any public launch.
+- **Sorting** on the home page: Recommended, Rent low→high / high→low, Top Rated, and Nearest to COMSATS (uses `distanceKm` when present).
+- **Hosting**: `firebase.json` now includes a Hosting section (`dist` + SPA rewrite). Deploy with `firebase deploy --only hosting` → https://hostela-5a2dc.web.app
 
 ## Phase 2 — how the loop works
 

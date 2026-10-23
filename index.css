@@ -1,0 +1,17 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Hostela global styles (Phase 3: Tailwind is installed and built locally —
+   the old Play CDN script in index.html is gone). */
+body {
+  font-family: 'Inter', sans-serif;
+}
+
+/* Used by the room-photo strips (was provided by a plugin under the CDN). */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

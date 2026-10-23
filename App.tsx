@@ -2,12 +2,19 @@ import { db } from './firebase';
 import { collection, addDoc, getDocs, doc, updateDoc } from 'firebase/firestore';
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { translations } from './translations';
-import { Language, User, Hostel, Review, Gender, Room, Inquiry, InquiryStatus } from './types';
+import { Language, User, Hostel, Review, Gender, Room, Inquiry, InquiryStatus, View } from './types';
 import { mockHostels, mockReviews, ADMIN_WHATSAPP } from './store';
 import { signUpWithEmail, signInWithEmail, signOutUser, watchAuth } from './auth';
-import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview } from './services';
+import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings } from './services';
 import { uploadHostelPhotos } from './uploads';
 import { Button } from './components/Button';
+import { Navbar } from './components/Navbar';
+import { HostelCard } from './components/HostelCard';
+import { Footer } from './components/Footer';
+import { ReviewsSection } from './components/ReviewsSection';
+import { InquiryPanel } from './components/InquiryPanel';
+import { MyInquiriesView } from './components/MyInquiriesView';
+import { InquiriesInbox } from './components/InquiriesInbox';
 import { 
   Search, 
   ShieldCheck, 
@@ -95,9 +102,8 @@ if (liveData.length > 0) {
       }
     })();
   }, [user]);
-  const [view, setView] = useState<'home' | 'details' | 'owner-dashboard' | 'admin-dashboard' | 'add-hostel' | 'login' | 'signup' | 'edit-hostel' | 'my-inquiries'>('home');
+  const [view, setView] = useState<View>('home');
   const [selectedHostel, setSelectedHostel] = useState<Hostel | null>(null);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
   // Hostel Edit State
   const [editHostelData, setEditHostelData] = useState<Hostel | null>(null);
@@ -106,6 +112,7 @@ if (liveData.length > 0) {
   const [searchQuery, setSearchQuery] = useState('');
   const [genderFilter, setGenderFilter] = useState<Gender | 'All'>('All');
   const [maxRentFilter, setMaxRentFilter] = useState<number>(100000);
+  const [sortBy, setSortBy] = useState<'recommended' | 'rent-asc' | 'rent-desc' | 'rating' | 'distance'>('recommended');
 
   // Auth form state (Phase 1: real Firebase Auth — see auth.ts)
   const [authName, setAuthName] = useState('');
@@ -154,7 +161,6 @@ if (liveData.length > 0) {
   };
 
   const goAfterLogin = (profile: User) => {
-    setIsMobileMenuOpen(false);
     if (profile.role === 'Admin') setView('admin-dashboard');
     else if (profile.role === 'Owner') setView('owner-dashboard');
     else if (selectedHostel) setView('details');
@@ -202,7 +208,6 @@ if (liveData.length > 0) {
     await signOutUser();
     setUser(null);
     setView('home');
-    setIsMobileMenuOpen(false);
   };
 
   const filteredHostels = useMemo(() => {
@@ -215,7 +220,36 @@ if (liveData.length > 0) {
     });
   }, [hostels, searchQuery, genderFilter, maxRentFilter]);
 
+  const sortedHostels = useMemo(() => {
+    const ratingOf = (id: string) => {
+      const r = getAvgRating(id);
+      return r === 'New' ? 0 : parseFloat(r);
+    };
+    const list = [...filteredHostels];
+    switch (sortBy) {
+      case 'rent-asc': return list.sort((a, b) => a.minRent - b.minRent);
+      case 'rent-desc': return list.sort((a, b) => b.minRent - a.minRent);
+      case 'rating': return list.sort((a, b) => ratingOf(b.id) - ratingOf(a.id));
+      case 'distance': return list.sort((a, b) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999));
+      default: return list;
+    }
+  }, [filteredHostels, sortBy, reviews]);
+
   const displayedHostels = user?.role === 'Admin' ? hostels : hostels.filter(h => h.ownerId === user?.id);
+
+  const handleSeedListings = async () => {
+    if (!user || user.role !== 'Admin') return;
+    if (!window.confirm('Load the 12 Islamabad/COMSATS demo listings into Firestore? Names that already exist are skipped.')) return;
+    try {
+      const added = await seedIslamabadListings(user.id, hostels.map(h => h.name));
+      const snap = await getDocs(collection(db, "hostels"));
+      setHostels(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Hostel, 'id'>) })));
+      alert(added > 0 ? `${added} demo listings added and approved.` : 'All demo listings are already loaded.');
+    } catch (error) {
+      console.error("Seed error:", error);
+      alert('Seeding failed — check the console and your Firestore rules.');
+    }
+  };
 
   const handleEditHostel = (hostel: Hostel) => {
     setEditHostelData({ ...hostel });
@@ -419,76 +453,7 @@ if (liveData.length > 0) {
   return (
     <div className="min-h-screen flex flex-col bg-[#F9FAFB] text-gray-900 selection:bg-blue-100" dir={lang === 'ur' || lang === 'ar' ? 'rtl' : 'ltr'}>
       
-      {/* Navbar */}
-      <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
-        <div className="max-w-7xl mx-auto h-16 px-4 flex items-center justify-between">
-          <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setView('home')}>
-            <div className="bg-blue-600 p-1.5 rounded-lg group-hover:bg-blue-700 transition-colors">
-              <ShieldCheck className="text-white w-6 h-6" />
-            </div>
-            <h1 className="text-xl font-bold tracking-tight text-gray-900">Hostela</h1>
-          </div>
-
-          <div className="hidden md:flex items-center gap-6">
-            <select value={lang} onChange={(e) => setLang(e.target.value as Language)} className="bg-transparent border-none text-sm font-semibold focus:ring-0 cursor-pointer">
-              <option value="en">EN</option>
-              <option value="ur">اردو</option>
-              <option value="ar">AR</option>
-            </select>
-            {user ? (
-              <div className="flex items-center gap-3">
-                {user.role !== 'Student' && (
-                  <Button variant="ghost" size="sm" onClick={() => setView(user.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard')} className="gap-2 text-xs">
-                    <LayoutDashboard className="w-3 h-3" /> Dashboard
-                  </Button>
-                )}
-                {user.role === 'Student' && (
-                  <Button variant="ghost" size="sm" onClick={() => setView('my-inquiries')} className="gap-2 text-xs">
-                    <Mail className="w-3 h-3" /> My Inquiries
-                  </Button>
-                )}
-                <div className="flex items-center gap-3 bg-gray-50 pl-1 pr-3 py-1 rounded-full border border-gray-200">
-                  <img src={user.avatar} className="w-8 h-8 rounded-full shadow-sm" alt="" />
-                  <span className="text-sm font-bold truncate max-w-[100px]">{user.name}</span>
-                  <button onClick={handleLogout} className="text-gray-400 hover:text-red-500 transition-colors"><LogOut className="w-4 h-4" /></button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => setView('login')}>Sign In</Button>
-                <Button variant="primary" size="sm" onClick={() => setView('signup')} className="gap-2">
-                  <Plus className="w-4 h-4" /> Create Account
-                </Button>
-              </div>
-            )}
-          </div>
-
-          <button className="md:hidden p-2" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
-            {isMobileMenuOpen ? <X /> : <Menu />}
-          </button>
-        </div>
-
-        {/* Mobile Menu */}
-        {isMobileMenuOpen && (
-          <div className="md:hidden absolute top-16 left-0 right-0 bg-white border-b shadow-xl px-4 py-6 space-y-4 animate-in slide-in-from-top duration-200">
-            <Button fullWidth variant="ghost" onClick={() => { setView('home'); setIsMobileMenuOpen(false); }}>Home</Button>
-            <Button fullWidth variant="ghost" onClick={() => { setView('add-hostel'); setIsMobileMenuOpen(false); }}>{t.addHostel}</Button>
-            <Button fullWidth variant="ghost" onClick={() => { setView('signup'); setIsMobileMenuOpen(false); }}>Create Account</Button>
-            <div className="grid grid-cols-2 gap-4">
-              <select value={lang} onChange={(e) => setLang(e.target.value as Language)} className="w-full border rounded-lg py-2 text-center font-bold">
-                <option value="en">English</option>
-                <option value="ur">اردو</option>
-                <option value="ar">Arabic</option>
-              </select>
-              {user ? (
-                <Button fullWidth variant="danger" onClick={handleLogout} className="gap-2"><LogOut className="w-4 h-4" /> Logout</Button>
-              ) : (
-                <Button fullWidth onClick={() => { setView('login'); setIsMobileMenuOpen(false); }}>Sign In</Button>
-              )}
-            </div>
-          </div>
-        )}
-      </header>
+      <Navbar lang={lang} onLangChange={setLang} user={user} t={t} onNavigate={setView} onLogout={handleLogout} />
 
       <main className="flex-grow">
         {view === 'home' && (
@@ -542,6 +507,17 @@ if (liveData.length > 0) {
                       <option value="Girls">{t.girls}</option>
                       <option value="Co-Living">{t.coLiving}</option>
                     </select>
+                    <select
+                      className="flex-grow md:min-w-[180px] p-4 bg-gray-50 border-none rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                    >
+                      <option value="recommended">Sort: Recommended</option>
+                      <option value="rent-asc">Rent: Low to High</option>
+                      <option value="rent-desc">Rent: High to Low</option>
+                      <option value="rating">Top Rated</option>
+                      <option value="distance">Nearest to COMSATS</option>
+                    </select>
                     <Button variant="outline" className="md:hidden rounded-2xl" onClick={() => {}}>
                       <Info className="w-5 h-5" />
                     </Button>
@@ -568,48 +544,10 @@ if (liveData.length > 0) {
 
             {/* Grid */}
             <section className="max-w-7xl mx-auto px-4 py-16">
-              {filteredHostels.length > 0 ? (
+              {sortedHostels.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-                  {filteredHostels.map(h => (
-                    <article 
-                      key={h.id} 
-                      className="group bg-white rounded-3xl border border-gray-100 overflow-hidden hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col h-full"
-                      onClick={() => { setSelectedHostel(h); setView('details'); window.scrollTo(0,0); }}
-                    >
-                      <div className="relative aspect-[4/3] overflow-hidden">
-                        <img src={h.photos[0]} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" alt={h.name} />
-                        <div className="absolute top-4 left-4 flex gap-2">
-                          <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm ${
-                            h.gender === 'Boys' ? 'bg-blue-600 text-white' : 
-                            h.gender === 'Girls' ? 'bg-pink-500 text-white' : 'bg-purple-600 text-white'
-                          }`}>
-                            {h.gender}
-                          </span>
-                        </div>
-                        <div className="absolute bottom-4 left-4">
-                          <span className="px-3 py-1 bg-white/90 backdrop-blur text-[10px] font-black text-gray-900 rounded-full flex items-center gap-1 shadow-sm">
-                            <Star className="w-3 h-3 text-yellow-500 fill-current" /> {getAvgRating(h.id)}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="p-6 flex-grow flex flex-col space-y-3">
-                        <div className="flex justify-between items-start">
-                          <h3 className="text-xl font-bold text-gray-900 group-hover:text-blue-600 transition-colors">{h.name}</h3>
-                        </div>
-                        <p className="flex items-center gap-1 text-gray-500 text-sm">
-                          <MapPin className="w-4 h-4 text-gray-400" /> {h.city} • {h.address.split(',')[0]}
-                        </p>
-                        <div className="mt-auto pt-4 border-t border-gray-50 flex items-center justify-between">
-                          <div className="flex flex-col">
-                            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-none mb-1">Monthly Start</span>
-                            <span className="text-2xl font-black text-gray-900">Rs. {h.minRent.toLocaleString()}</span>
-                          </div>
-                          <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-all">
-                            <ChevronLeft className="w-5 h-5 rotate-180" />
-                          </div>
-                        </div>
-                      </div>
-                    </article>
+                  {sortedHostels.map(h => (
+<HostelCard hostel={h} avgRating={getAvgRating(h.id)} onOpen={(hostel) => { setSelectedHostel(hostel); setView('details'); window.scrollTo(0,0); }} />
                   ))}
                 </div>
               ) : (
@@ -698,6 +636,9 @@ if (liveData.length > 0) {
                         <div className="flex flex-wrap gap-2 mb-4">
                           <span className="px-3 py-1 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-widest rounded-full">{t.verified}</span>
                           <span className="px-3 py-1 bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedHostel.gender}</span>
+                          {selectedHostel.distanceKm !== undefined && (
+                            <span className="px-3 py-1 bg-gray-100 text-gray-600 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedHostel.distanceKm} km from COMSATS</span>
+                          )}
                         </div>
                         <h2 className="text-3xl font-black mb-6 text-gray-900">{selectedHostel.name}</h2>
                         <p className="text-gray-600 leading-relaxed text-lg">{selectedHostel.description}</p>
@@ -776,173 +717,18 @@ if (liveData.length > 0) {
                         </div>
                      )}
 
-                     <div className="bg-white p-8 md:p-10 rounded-[2rem] border border-gray-100 shadow-sm">
-                        <div className="flex items-center justify-between mb-8">
-                           <h2 className="text-xl font-black text-gray-900">{t.reviews}</h2>
-                           <span className="text-xs font-bold text-gray-400 italic">{t.adminNote}</span>
-                        </div>
-                        <div className="space-y-6">
-                           {reviews.filter(r => r.hostelId === selectedHostel.id).map(r => (
-                             <div key={r.id} className="p-6 bg-gray-50 rounded-2xl relative overflow-hidden group">
-                                <div className="flex justify-between items-center mb-3">
-                                   <div className="flex gap-0.5">
-                                      {[...Array(5)].map((_, i) => (
-                                        <Star key={i} className={`w-3 h-3 ${i < r.rating ? 'text-yellow-400 fill-current' : 'text-gray-200'}`} />
-                                      ))}
-                                   </div>
-                                   <span className="text-[10px] font-bold text-gray-400">{r.date}</span>
-                                </div>
-                                <p className="text-gray-700 italic mb-4 leading-relaxed">"{r.comment}"</p>
-                                <div className="flex items-center gap-2">
-                                  <CheckCircle className="w-3 h-3 text-blue-500" />
-                                  <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">{r.studentName || 'Anonymous Resident'}</span>
-                                </div>
-                             </div>
-                           ))}
-                        </div>
-                        
-                        {myReviewForSelected ? (
-                          <div className="mt-10 p-8 bg-green-50 rounded-[2rem] border border-green-100 text-center space-y-2">
-                            <CheckCircle className="w-8 h-8 text-green-500 mx-auto" />
-                            <p className="font-black text-green-800">You've reviewed this hostel</p>
-                            <p className="text-xs font-bold text-green-600">Thanks — your verified review is shown above.</p>
-                          </div>
-                        ) : stayedInquiry ? (
-                          <form className="mt-10 p-8 bg-blue-50 rounded-[2rem] space-y-4 border border-blue-100" onSubmit={handleStudentAddReview}>
-                            <h3 className="font-black text-blue-900">Post a Verified Review</h3>
-                            <div className="flex gap-2">
-                              {[1, 2, 3, 4, 5].map(s => (
-                                <Star key={s} className={`w-8 h-8 cursor-pointer transition-all ${reviewRating >= s ? 'text-yellow-400 fill-current' : 'text-gray-200 hover:scale-110'}`} onClick={() => setReviewRating(s)} />
-                              ))}
-                            </div>
-                            <textarea
-                              className="w-full p-5 rounded-2xl border-none text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white font-medium"
-                              rows={4}
-                              placeholder="Describe your stay experience..."
-                              value={reviewComment}
-                              onChange={(e) => setReviewComment(e.target.value)}
-                            />
-                            <Button fullWidth size="lg" className="rounded-2xl">Submit Review</Button>
-                          </form>
-                        ) : user?.role === 'Student' ? (
-                          <div className="mt-10 p-8 border-2 border-dashed border-blue-200 bg-blue-50/50 rounded-[2rem] text-center">
-                            <p className="text-sm font-black text-blue-900 mb-2">Reviews unlock after your stay</p>
-                            <p className="text-xs font-medium text-blue-700 leading-relaxed">Send an inquiry from this page — once the owner confirms you stayed here, you can post a verified review. That's how Hostela keeps reviews honest.</p>
-                          </div>
-                        ) : (
-                          <div className="mt-10 p-8 border-2 border-dashed border-gray-200 rounded-[2rem] text-center">
-                            <p className="text-sm font-bold text-gray-500 mb-4">{t.studentLogin}</p>
-                            <Button variant="outline" size="sm" onClick={() => setView('login')} className="rounded-xl px-8 flex items-center gap-2 mx-auto">
-                              Sign in to write a review
-                            </Button>
-                          </div>
-                        )}
-                     </div>
+                     <ReviewsSection hostel={selectedHostel} reviews={reviews} t={t} user={user} stayedInquiry={stayedInquiry} myReview={myReviewForSelected} reviewRating={reviewRating} onRatingChange={setReviewRating} reviewComment={reviewComment} onCommentChange={setReviewComment} onSubmitReview={handleStudentAddReview} onSignIn={() => setView('login')} />
                   </div>
 
-                  <div className="space-y-6">
-                     <div className="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-2xl sticky top-24">
-                        <div className="space-y-1 mb-8">
-                           <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em]">Starting Rent</p>
-                           <h3 className="text-4xl font-black text-blue-600 tracking-tighter">Rs. {selectedHostel.minRent.toLocaleString()}</h3>
-                        </div>
-                        <div className="space-y-4">
-                           {user && user.id === selectedHostel.ownerId ? (
-                             <div className="p-4 bg-blue-50 rounded-2xl text-center">
-                               <p className="text-xs font-bold text-blue-800 leading-relaxed">This is your listing. Student inquiries for it arrive in your dashboard.</p>
-                             </div>
-                           ) : inquirySent ? (
-                             <div className="p-5 bg-green-50 border border-green-100 rounded-2xl text-center space-y-2">
-                               <CheckCircle className="w-8 h-8 text-green-500 mx-auto" />
-                               <p className="font-black text-green-800">Inquiry sent!</p>
-                               <p className="text-xs font-bold text-green-600 leading-relaxed">The owner has your message and can contact you. Track replies under My Inquiries.</p>
-                             </div>
-                           ) : user ? (
-                             <form className="space-y-3" onSubmit={handleSubmitInquiry}>
-                               <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em]">Send an inquiry to the owner</p>
-                               <textarea
-                                 required
-                                 rows={3}
-                                 className="w-full p-4 rounded-2xl bg-gray-50 border-none text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
-                                 placeholder="Hi! I'm looking for a bed — is one available?"
-                                 value={inquiryMessage}
-                                 onChange={(e) => setInquiryMessage(e.target.value)}
-                               />
-                               <input
-                                 type="tel"
-                                 className="w-full p-4 rounded-2xl bg-gray-50 border-none text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                                 placeholder="Your phone / WhatsApp (optional)"
-                                 value={inquiryPhone}
-                                 onChange={(e) => setInquiryPhone(e.target.value)}
-                               />
-                               <input
-                                 type="text"
-                                 className="w-full p-4 rounded-2xl bg-gray-50 border-none text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-                                 placeholder="Planning to move in — e.g. Nov 2026 (optional)"
-                                 value={inquiryMoveIn}
-                                 onChange={(e) => setInquiryMoveIn(e.target.value)}
-                               />
-                               <Button fullWidth size="lg" disabled={inquiryBusy} className="rounded-2xl py-5 shadow-xl shadow-blue-100">
-                                 {inquiryBusy ? 'Sending…' : 'Send Inquiry'}
-                               </Button>
-                             </form>
-                           ) : (
-                             <div className="text-center space-y-3">
-                               <p className="text-sm font-bold text-gray-500">Sign in to send an inquiry directly to the owner.</p>
-                               <Button fullWidth size="lg" className="rounded-2xl py-5" onClick={() => setView('login')}>Sign In to Inquire</Button>
-                             </div>
-                           )}
-                           {selectedHostel.whatsappNumber && user?.id !== selectedHostel.ownerId && (
-                             <a href={`https://wa.me/${selectedHostel.whatsappNumber}`} target="_blank" rel="noreferrer" className="block">
-                               <Button fullWidth variant="outline" size="lg" className="rounded-2xl py-4 flex gap-2">
-                                 <MessageCircle className="w-5 h-5" /> WhatsApp the owner
-                               </Button>
-                             </a>
-                           )}
-                           <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-2xl">
-                             <ShieldCheck className="w-6 h-6 text-blue-600 flex-shrink-0" />
-                             <p className="text-[10px] text-gray-500 font-bold uppercase leading-relaxed tracking-wider">Inquiries go directly to the owner. Never pay in advance — visit first, then decide.</p>
-                           </div>
-                        </div>
-                     </div>
-                  </div>
+<InquiryPanel hostel={selectedHostel} user={user} sent={inquirySent} busy={inquiryBusy} message={inquiryMessage} onMessageChange={setInquiryMessage} phone={inquiryPhone} onPhoneChange={setInquiryPhone} moveIn={inquiryMoveIn} onMoveInChange={setInquiryMoveIn} onSubmitInquiry={handleSubmitInquiry} onSignIn={() => setView('login')} />
                </div>
             </div>
           </div>
         )}
 
         {view === 'my-inquiries' && user && (
-          <div className="max-w-4xl mx-auto py-12 px-4 animate-in fade-in duration-500">
-            <h2 className="text-4xl font-black text-gray-900 mb-2">My Inquiries</h2>
-            <p className="text-gray-500 font-medium mb-10">Hostels you've contacted — and what happens next.</p>
-            {inquiries.length === 0 ? (
-              <div className="p-10 bg-white rounded-[2rem] border-2 border-dashed border-gray-200 text-center">
-                <p className="font-bold text-gray-500 mb-4">You haven't sent any inquiries yet.</p>
-                <Button onClick={() => setView('home')} className="rounded-xl px-8">Browse Hostels</Button>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {inquiries.map(inq => (
-                  <div key={inq.id} className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="font-black text-gray-900 text-lg">{inq.hostelName}</p>
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                        inq.status === 'new' ? 'bg-yellow-100 text-yellow-700' :
-                        inq.status === 'contacted' ? 'bg-blue-100 text-blue-700' :
-                        inq.status === 'stayed' ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
-                      }`}>
-                        {inq.status === 'new' ? 'Sent — waiting for owner' : inq.status === 'contacted' ? 'Owner contacted you' : inq.status === 'stayed' ? 'Stay confirmed — you can review!' : 'Closed'}
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-600 italic">"{inq.message}"</p>
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.moveIn ? ` • Moving in: ${inq.moveIn}` : ''}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <MyInquiriesView inquiries={inquiries} onBrowse={() => setView('home')} />
         )}
-
         {(view === 'owner-dashboard' || view === 'admin-dashboard') && (
            <div className="max-w-6xl mx-auto py-12 px-4 animate-in fade-in duration-500">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
@@ -950,7 +736,12 @@ if (liveData.length > 0) {
                     <h2 className="text-4xl font-black text-gray-900">{user?.role === 'Admin' ? t.adminPortal : t.ownerPortal}</h2>
                     <p className="text-gray-500 mt-2 font-medium">Manage properties and room availability.</p>
                  </div>
-                 <Button onClick={() => setView('add-hostel')} size="lg" className="rounded-2xl gap-2 shadow-xl shadow-blue-100"><Plus className="w-5 h-5" /> {t.addHostel}</Button>
+                 <div className="flex flex-wrap gap-3">
+                   {user?.role === 'Admin' && (
+                     <Button variant="outline" onClick={handleSeedListings} size="lg" className="rounded-2xl gap-2">Load Islamabad Demo Listings</Button>
+                   )}
+                   <Button onClick={() => setView('add-hostel')} size="lg" className="rounded-2xl gap-2 shadow-xl shadow-blue-100"><Plus className="w-5 h-5" /> {t.addHostel}</Button>
+                 </div>
               </div>
 
               <div className="grid grid-cols-1 gap-8">
@@ -1007,45 +798,7 @@ if (liveData.length > 0) {
   </div>
 )}
 {/* --- END OF VERIFICATION DASHBOARD MODIFICATION --- */}
-                {(user?.role === 'Owner' || user?.role === 'Admin') && inquiries.length > 0 && (
-                  <div className="bg-white p-8 rounded-[2.5rem] border-2 border-blue-100 shadow-xl shadow-blue-50">
-                    <div className="flex items-center gap-3 mb-8">
-                      <div className="bg-blue-100 p-2 rounded-xl">
-                        <Mail className="w-6 h-6 text-blue-600" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-black text-gray-900">Student Inquiries</h3>
-                        <p className="text-sm text-gray-500 font-medium">{inquiries.length} total — contact the student, then mark the stay once they move in to unlock their review.</p>
-                      </div>
-                    </div>
-                    <div className="space-y-4">
-                      {inquiries.map(inq => (
-                        <div key={inq.id} className="p-5 bg-gray-50 rounded-2xl border border-gray-100 space-y-3">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <p className="font-bold text-gray-900">{inq.studentName} <span className="text-gray-400 font-medium">→ {inq.hostelName}</span></p>
-                              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.studentPhone ? ` • ${inq.studentPhone}` : ''}{inq.moveIn ? ` • Move-in: ${inq.moveIn}` : ''}</p>
-                            </div>
-                            <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                              inq.status === 'new' ? 'bg-yellow-100 text-yellow-700' :
-                              inq.status === 'contacted' ? 'bg-blue-100 text-blue-700' :
-                              inq.status === 'stayed' ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
-                            }`}>{inq.status}</span>
-                          </div>
-                          <p className="text-sm text-gray-600 italic">"{inq.message}"</p>
-                          {inq.status !== 'closed' && (
-                            <div className="flex flex-wrap gap-2">
-                              {inq.status === 'new' && <Button size="sm" variant="secondary" className="rounded-xl" onClick={() => handleInquiryStatus(inq.id, 'contacted')}>Mark Contacted</Button>}
-                              {inq.status !== 'stayed' && <Button size="sm" className="rounded-xl" onClick={() => handleInquiryStatus(inq.id, 'stayed')}>Mark Stayed</Button>}
-                              {inq.status === 'stayed' && <span className="text-[10px] font-black text-green-600 uppercase tracking-widest self-center">Stay confirmed — this student can now review</span>}
-                              <Button size="sm" variant="danger" className="rounded-xl" onClick={() => handleInquiryStatus(inq.id, 'closed')}>Close</Button>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <InquiriesInbox inquiries={inquiries} onStatus={handleInquiryStatus} />
                  {displayedHostels.map(h => (
 
                    <div key={h.id} className="bg-white p-6 md:p-8 rounded-[2.5rem] border border-gray-100 shadow-sm flex flex-col md:flex-row gap-8 items-start group">
@@ -1418,43 +1171,7 @@ if (liveData.length > 0) {
         )}
       </main>
 
-      <footer className="bg-white border-t border-gray-100 py-16 px-4 mt-auto">
-        <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-12 items-center text-center md:text-left">
-          <div className="space-y-4">
-            <div className="flex items-center justify-center md:justify-start gap-2">
-              <div className="bg-blue-600 p-1 rounded-md">
-                <ShieldCheck className="text-white w-5 h-5" />
-              </div>
-              <h2 className="text-xl font-black text-gray-900 tracking-tighter">Hostela</h2>
-            </div>
-            <p className="text-sm text-gray-500 leading-relaxed font-medium">Pakistan's first student-focused hostel marketplace built on trust and direct moderation.</p>
-          </div>
-          
-          <div className="flex flex-col items-center gap-4">
-            <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.3em]">Official Channels</p>
-            <div className="flex gap-4">
-               <a href="#" className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:text-blue-600 transition-colors shadow-sm"><Globe className="w-5 h-5" /></a>
-               <a href="#" className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:text-blue-600 transition-colors shadow-sm"><Mail className="w-5 h-5" /></a>
-               <a href={`https://wa.me/${ADMIN_WHATSAPP}`} className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-400 hover:text-green-500 transition-colors shadow-sm"><MessageCircle className="w-5 h-5" /></a>
-            </div>
-          </div>
-
-          <div className="space-y-4 md:text-right">
-            <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">© 2024 Verified Student Marketplace</p>
-            <div className="flex justify-center md:justify-end gap-6 text-[10px] font-black text-gray-400 uppercase tracking-widest">
-              <button type="button" className="hover:text-blue-600 transition-colors">Privacy</button>
-              <button type="button" className="hover:text-blue-600 transition-colors">Terms</button>
-              <button 
-                type="button" 
-                className="hover:text-blue-600 transition-colors font-bold text-gray-600" 
-                onClick={(e) => { e.preventDefault(); setView('login'); }}
-              >
-                Sign In
-              </button>
-            </div>
-          </div>
-        </div>
-      </footer>
+      <Footer onSignIn={() => setView('login')} />
     </div>
   );
 }

@@ -10,6 +10,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { Inquiry, InquiryStatus, Review } from './types';
+import { islamabadSeedListings } from './seed';
 
 // Phase 2 data services: student inquiries + gated, persisted reviews.
 // The gating is enforced server-side by firestore.rules — a review document
@@ -82,4 +83,28 @@ export async function submitReview(
   // overwrite silently — create-only semantics come from firestore.rules.
   await setDoc(doc(db, 'reviews', inquiry.id), review);
   return review;
+}
+
+// Phase 3: one-click demo seed for the admin dashboard. Creates each
+// Islamabad listing as 'pending' (the only status the rules allow on
+// create) and immediately approves it — admins may update any listing.
+// Listings whose name already exists are skipped. Returns how many were added.
+export async function seedIslamabadListings(
+  adminId: string,
+  existingNames: string[]
+): Promise<number> {
+  let added = 0;
+  for (const listing of islamabadSeedListings) {
+    if (existingNames.includes(listing.name)) continue;
+    const ref = await addDoc(collection(db, 'hostels'), {
+      ...listing,
+      ownerId: adminId,
+      status: 'pending',
+      isVerified: true,
+      createdAt: new Date().toISOString(),
+    });
+    await updateDoc(ref, { status: 'approved' });
+    added++;
+  }
+  return added;
 }
