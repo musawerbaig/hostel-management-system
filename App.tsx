@@ -1,9 +1,9 @@
 import { db } from './firebase'; 
-import { collection, addDoc, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, updateDoc, query, where } from 'firebase/firestore';
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { translations } from './translations';
 import { Language, User, Hostel, Review, Gender, Room, Inquiry, InquiryStatus, View } from './types';
-import { mockHostels, mockReviews, ADMIN_WHATSAPP } from './store';
+
 import { signUpWithEmail, signInWithEmail, signOutUser, watchAuth } from './auth';
 import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings } from './services';
 import { uploadHostelPhotos } from './uploads';
@@ -52,37 +52,50 @@ const [newCity, setNewCity] = useState('');
 const [isSubmitting, setIsSubmitting] = useState(false);
   const [lang, setLang] = useState<Language>('en');
   const [user, setUser] = useState<User | null>(null);
-  const [hostels, setHostels] = useState<Hostel[]>(mockHostels);
+  const [hostels, setHostels] = useState<Hostel[]>([]);
   // This pulls live data from your Firebase
+  // R1 (audit B-1): Firestore list queries must be shaped to the security
+  // rules or they are denied outright. Public query = approved only (the
+  // only read the rules grant signed-out). Signed-in extras are merged in
+  // by the effect below. There is NO mock fallback: empty means empty.
   useEffect(() => {
-    const getLiveHostels = async () => {
+    (async () => {
       try {
-        const querySnapshot = await getDocs(collection(db, "hostels"));
-        const liveData: Hostel[] = querySnapshot.docs.map(doc => ({
-  id: doc.id,
-  ...(doc.data() as Omit<Hostel, 'id'>),
-}));
-
-        
-        // If you have real data, show it. Otherwise, keep the mock data for now.
-        // This ensures that even if you have mock data, 
-// the live data from Firebase takes priority for the admin
-if (liveData.length > 0) {
-  setHostels(liveData);
-}
+        const snap = await getDocs(query(collection(db, "hostels"), where("status", "==", "approved")));
+        setHostels(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Hostel, 'id'>) })));
       } catch (error) {
-        console.error("Error fetching from Firebase:", error);
+        console.error("Error fetching listings:", error);
       }
-    };
-    getLiveHostels();
+    })();
   }, []);
-  const [reviews, setReviews] = useState<Review[]>(mockReviews);
+
+  // Owners additionally see their own listings at any status; admins see all.
+  useEffect(() => {
+    if (!user || user.role === 'Student') return;
+    (async () => {
+      try {
+        const q = user.role === 'Admin'
+          ? collection(db, "hostels")
+          : query(collection(db, "hostels"), where("ownerId", "==", user.id));
+        const snap = await getDocs(q);
+        const extra = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Hostel, 'id'>) }));
+        setHostels(prev => {
+          const byId = new Map(prev.map(h => [h.id, h]));
+          extra.forEach(h => byId.set(h.id, h));
+          return [...byId.values()];
+        });
+      } catch (error) {
+        console.error("Error fetching dashboard listings:", error);
+      }
+    })();
+  }, [user]);
+  const [reviews, setReviews] = useState<Review[]>([]);
   // Phase 2: reviews are persisted in Firestore (gated — see services.ts).
   useEffect(() => {
     (async () => {
       try {
         const live = await fetchAllReviews();
-        if (live.length > 0) setReviews(live);
+        setReviews(live);
       } catch (error) {
         console.error("Error fetching reviews:", error);
       }
@@ -469,7 +482,7 @@ if (liveData.length > 0) {
                   {t.welcome}
                 </h2>
                 <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-                  Simple, verified, and secure student hostels across Pakistan. Connect directly with Hostela Admins for guaranteed placement.
+                  Verified student hostels near COMSATS Islamabad. Every listing is checked by our team before it goes live — send an inquiry and the owner replies to you directly.
                 </p>
                 <div className="flex flex-col sm:flex-row justify-center gap-4 pt-4">
                   <Button size="lg" className="rounded-2xl shadow-xl shadow-blue-200 px-10" onClick={() => {
@@ -581,8 +594,8 @@ if (liveData.length > 0) {
                         <Zap className="text-blue-500" />
                       </div>
                       <div>
-                        <h4 className="text-lg font-bold">Direct Admin Booking</h4>
-                        <p className="text-gray-400 text-sm">We handle the communication. Our HQ contact ensures you get the real room at the right price.</p>
+                        <h4 className="text-lg font-bold">Direct Owner Contact</h4>
+                        <p className="text-gray-400 text-sm">No middlemen and no booking fees. Your inquiry goes straight to the hostel owner, who confirms availability with you directly.</p>
                       </div>
                     </div>
                     <div className="flex gap-4">
@@ -601,14 +614,14 @@ if (liveData.length > 0) {
                     <div className="flex items-center gap-4 mb-8">
                       <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold text-xl">H</div>
                       <div>
-                        <p className="font-bold">Hostela Assurance</p>
-                        <p className="text-xs text-blue-400">Trusted Partner Program</p>
+                        <p className="font-bold">How Hostela verifies</p>
+                        <p className="text-xs text-blue-400">The checks behind the badge</p>
                       </div>
                     </div>
-                    <p className="text-gray-300 italic mb-6">"Our goal is to eliminate the stress of finding student accommodation. By centralizing booking through our verified HQ, we protect both students and parents from scams."</p>
+                    <p className="text-gray-300 italic mb-6">"Every listing passes our verification checklist: the owner's identity and right to list the property, a phone number we have reached them on, and photos checked for consistency. Verification is a document and consistency check done remotely — we never claim a physical visit that did not happen."</p>
                     <div className="flex items-center gap-2">
                       <CheckCircle className="text-green-500 w-5 h-5" />
-                      <span className="text-sm font-bold">Official Marketplace Certification</span>
+                      <span className="text-sm font-bold">Verified Listing Checklist</span>
                     </div>
                   </div>
                   {/* Decorative blobs */}

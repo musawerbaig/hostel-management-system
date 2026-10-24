@@ -27,7 +27,12 @@ service cloud.firestore {
       // At sign-up you may create ONLY your own profile, and never as Admin.
       allow create: if isSignedIn()
         && request.auth.uid == uid
-        && request.resource.data.role in ['Student', 'Owner'];
+        && request.resource.data.role in ['Student', 'Owner']
+        // R1 (audit S-2): approval state is not the user's choice. Students
+        // are active immediately; owners always start UNapproved. Before this
+        // constraint an owner could self-approve via a direct API write.
+        && ((request.resource.data.role == 'Student' && request.resource.data.isApproved == true)
+            || (request.resource.data.role == 'Owner' && request.resource.data.isApproved == false));
       // You may edit your own profile but never your own role or approval.
       allow update: if isAdmin()
         || (isSignedIn() && request.auth.uid == uid
@@ -47,14 +52,20 @@ service cloud.firestore {
       // starting at 'pending' — verification cannot be skipped.
       allow create: if (isApprovedOwner() || isAdmin())
         && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.status == 'pending';
+        && request.resource.data.status == 'pending'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 2
+        // Only admins may create an already-verified listing (seed path).
+        && (isAdmin() || request.resource.data.get('isVerified', false) == false);
       // Owners may edit their own listing, but cannot approve/reject it or
       // hand it to someone else. Admins can do anything (moderation).
       allow update: if isAdmin()
         || (isSignedIn()
             && resource.data.ownerId == request.auth.uid
             && request.resource.data.ownerId == resource.data.ownerId
-            && request.resource.data.status == resource.data.status);
+            && request.resource.data.status == resource.data.status
+            // Owners cannot grant themselves the Verified flag (audit S-3).
+            && request.resource.data.get('isVerified', false) == resource.data.get('isVerified', false));
       allow delete: if isAdmin()
         || (isSignedIn() && resource.data.ownerId == request.auth.uid);
     }
