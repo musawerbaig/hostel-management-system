@@ -1,11 +1,11 @@
 import { db } from './firebase'; 
-import { collection, addDoc, getDocs, doc, updateDoc, query, where } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, serverTimestamp } from 'firebase/firestore';
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { translations } from './translations';
-import { Language, User, Hostel, Review, Gender, Room, Inquiry, InquiryStatus, View } from './types';
+import { Language, User, Hostel, Review, Gender, Inquiry, InquiryStatus, View, COMSATS, distanceKm } from './types';
 
-import { signUpWithEmail, signInWithEmail, signOutUser, watchAuth } from './auth';
-import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings } from './services';
+import { signUpWithEmail, signInWithEmail, signOutUser, sendPasswordReset, watchAuth, fetchProfile } from './auth';
+import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, docToModel } from './services';
 import { uploadHostelPhotos } from './uploads';
 import { Button } from './components/Button';
 import { Navbar } from './components/Navbar';
@@ -48,7 +48,7 @@ import {
 
 export default function App() {
   const [newName, setNewName] = useState('');
-const [newCity, setNewCity] = useState('');
+const [newArea, setNewArea] = useState('');
 const [isSubmitting, setIsSubmitting] = useState(false);
   const [lang, setLang] = useState<Language>('en');
   const [user, setUser] = useState<User | null>(null);
@@ -61,8 +61,8 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   useEffect(() => {
     (async () => {
       try {
-        const snap = await getDocs(query(collection(db, "hostels"), where("status", "==", "approved")));
-        setHostels(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Hostel, 'id'>) })));
+        const snap = await getDocs(query(collection(db, "hostels"), where("status", "==", "live")));
+        setHostels(snap.docs.map(d => docToModel(d.id, d.data()) as Hostel));
       } catch (error) {
         console.error("Error fetching listings:", error);
       }
@@ -71,14 +71,14 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Owners additionally see their own listings at any status; admins see all.
   useEffect(() => {
-    if (!user || user.role === 'Student') return;
+    if (!user || user.role === 'student') return;
     (async () => {
       try {
-        const q = user.role === 'Admin'
+        const q = user.role === 'admin'
           ? collection(db, "hostels")
           : query(collection(db, "hostels"), where("ownerId", "==", user.id));
         const snap = await getDocs(q);
-        const extra = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Hostel, 'id'>) }));
+        const extra = snap.docs.map(d => docToModel(d.id, d.data()) as Hostel);
         setHostels(prev => {
           const byId = new Map(prev.map(h => [h.id, h]));
           extra.forEach(h => byId.set(h.id, h));
@@ -106,8 +106,8 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     if (!user) { setInquiries([]); return; }
     (async () => {
       try {
-        const data = user.role === 'Admin' ? await fetchAllInquiries()
-          : user.role === 'Owner' ? await fetchInquiriesForOwner(user.id)
+        const data = user.role === 'admin' ? await fetchAllInquiries()
+          : user.role === 'owner' ? await fetchInquiriesForOwner(user.id)
           : await fetchInquiriesForStudent(user.id);
         setInquiries(data);
       } catch (error) {
@@ -126,13 +126,16 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [genderFilter, setGenderFilter] = useState<Gender | 'All'>('All');
   const [maxRentFilter, setMaxRentFilter] = useState<number>(100000);
-  const [sortBy, setSortBy] = useState<'recommended' | 'rent-asc' | 'rent-desc' | 'rating' | 'distance'>('recommended');
+  const [sortBy, setSortBy] = useState<'recommended' | 'rent-asc' | 'rent-desc' | 'distance' | 'beds'>('recommended');
 
   // Auth form state (Phase 1: real Firebase Auth — see auth.ts)
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
-  const [authRole, setAuthRole] = useState<'Student' | 'Owner'>('Student');
+  const [authRole, setAuthRole] = useState<'student' | 'owner'>('student');
+  const [authPhone, setAuthPhone] = useState('');
+  const [authUniversity, setAuthUniversity] = useState('');
+  const [authResetMsg, setAuthResetMsg] = useState('');
   const [authError, setAuthError] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
 
@@ -146,9 +149,11 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   const [inquiryMessage, setInquiryMessage] = useState('');
   const [inquiryPhone, setInquiryPhone] = useState('');
   const [inquiryMoveIn, setInquiryMoveIn] = useState('');
+  const [inquiryBeds, setInquiryBeds] = useState(1);
+  const [ownerPhone, setOwnerPhone] = useState('');
   const [inquiryBusy, setInquiryBusy] = useState(false);
   const [inquirySent, setInquirySent] = useState(false);
-  useEffect(() => { setInquirySent(false); setInquiryMessage(''); }, [selectedHostel]);
+  useEffect(() => { setInquirySent(false); setInquiryMessage(''); setOwnerPhone(''); }, [selectedHostel]);
 
   // Image Upload State — previews for the UI plus the real File objects
   // that Phase 2 uploads to Firebase Storage on submit.
@@ -159,7 +164,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   const t = translations[lang];
 
   const getAvgRating = (hostelId: string) => {
-    const hostelReviews = reviews.filter(r => r.hostelId === hostelId);
+    const hostelReviews = reviews.filter(r => r.hostelId === hostelId && r.status === 'visible');
     if (hostelReviews.length === 0) return 'New';
     const sum = hostelReviews.reduce((acc, r) => acc + r.rating, 0);
     return (sum / hostelReviews.length).toFixed(1);
@@ -175,8 +180,8 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   };
 
   const goAfterLogin = (profile: User) => {
-    if (profile.role === 'Admin') setView('admin-dashboard');
-    else if (profile.role === 'Owner') setView('owner-dashboard');
+    if (profile.role === 'admin') setView('admin-dashboard');
+    else if (profile.role === 'owner') setView('owner-dashboard');
     else if (selectedHostel) setView('details');
     else setView('home');
   };
@@ -202,11 +207,11 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     setAuthError('');
     setAuthBusy(true);
     try {
-      const profile = await signUpWithEmail(authName.trim(), authEmail.trim(), authPassword, authRole);
+      const profile = await signUpWithEmail(authName.trim(), authEmail.trim(), authPassword, authRole, authPhone.trim(), authUniversity.trim() || undefined);
       setUser(profile);
       setAuthPassword('');
-      if (profile.role === 'Owner') {
-        alert('Owner account created. An admin will approve your account before your listings can go live.');
+      if (profile.role === 'owner') {
+        alert('Owner account created. Submit a listing and an admin will verify it before it goes live.');
         setView('owner-dashboard');
       } else {
         setView('home');
@@ -218,6 +223,17 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     }
   };
 
+  const handlePasswordReset = async () => {
+    if (!authEmail.trim()) { setAuthError('Enter your email address first.'); return; }
+    setAuthError('');
+    try {
+      await sendPasswordReset(authEmail.trim());
+      setAuthResetMsg('Password reset email sent — check your inbox.');
+    } catch {
+      setAuthError('Could not send the reset email. Check the address and try again.');
+    }
+  };
+
   const handleLogout = async () => {
     await signOutUser();
     setUser(null);
@@ -226,39 +242,37 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
   const filteredHostels = useMemo(() => {
     return hostels.filter(h => {
-      const matchesSearch = h.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                           h.city.toLowerCase().includes(searchQuery.toLowerCase());
+      const q = searchQuery.toLowerCase();
+      const matchesSearch = h.name.toLowerCase().includes(q) ||
+                           h.area.toLowerCase().includes(q);
       const matchesGender = genderFilter === 'All' || h.gender === genderFilter;
-      const matchesRent = h.minRent <= maxRentFilter;
-      return matchesSearch && matchesGender && matchesRent && h.status === 'approved';
+      const matchesRent = h.pricePerBedMonthly <= maxRentFilter;
+      return matchesSearch && matchesGender && matchesRent && h.status === 'live';
     });
   }, [hostels, searchQuery, genderFilter, maxRentFilter]);
 
   const sortedHostels = useMemo(() => {
-    const ratingOf = (id: string) => {
-      const r = getAvgRating(id);
-      return r === 'New' ? 0 : parseFloat(r);
-    };
     const list = [...filteredHostels];
+    const dist = (h: Hostel) => distanceKm(COMSATS.latitude, COMSATS.longitude, h.latitude, h.longitude);
     switch (sortBy) {
-      case 'rent-asc': return list.sort((a, b) => a.minRent - b.minRent);
-      case 'rent-desc': return list.sort((a, b) => b.minRent - a.minRent);
-      case 'rating': return list.sort((a, b) => ratingOf(b.id) - ratingOf(a.id));
-      case 'distance': return list.sort((a, b) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999));
-      default: return list;
+      case 'rent-asc': return list.sort((a, b) => a.pricePerBedMonthly - b.pricePerBedMonthly);
+      case 'rent-desc': return list.sort((a, b) => b.pricePerBedMonthly - a.pricePerBedMonthly);
+      case 'distance': return list.sort((a, b) => dist(a) - dist(b));
+      case 'beds': return list.sort((a, b) => b.bedsAvailable - a.bedsAvailable);
+      default: return list.sort((a, b) => String(b.verifiedAt || b.createdAt).localeCompare(String(a.verifiedAt || a.createdAt)));
     }
-  }, [filteredHostels, sortBy, reviews]);
+  }, [filteredHostels, sortBy]);
 
-  const displayedHostels = user?.role === 'Admin' ? hostels : hostels.filter(h => h.ownerId === user?.id);
+  const displayedHostels = user?.role === 'admin' ? hostels : hostels.filter(h => h.ownerId === user?.id);
 
   const handleSeedListings = async () => {
-    if (!user || user.role !== 'Admin') return;
+    if (!user || user.role !== 'admin') return;
     setSeedMsg('Adding demo listings…');
     try {
       const added = await seedIslamabadListings(user.id, hostels.map(h => h.name));
       const snap = await getDocs(collection(db, "hostels"));
-      setHostels(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Hostel, 'id'>) })));
-      setSeedMsg(added > 0 ? `${added} demo listings added and approved.` : 'All demo listings are already loaded.');
+      setHostels(snap.docs.map(d => docToModel(d.id, d.data()) as Hostel));
+      setSeedMsg(added > 0 ? `${added} demo listings added and verified.` : 'All demo listings are already loaded.');
     } catch (error) {
       console.error("Seed error:", error);
       setSeedMsg('Seeding failed — please try again.');
@@ -270,60 +284,69 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     setView('edit-hostel');
   };
 
-  const saveHostelChanges = (e: React.FormEvent) => {
+  const saveHostelChanges = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editHostelData) return;
-    setHostels(prev => prev.map(h => h.id === editHostelData.id ? editHostelData : h));
-    alert("Listing updated successfully!");
-    setView(user?.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard');
-  };
-
-  const toggleRoomAvailability = (roomId: string) => {
-    if (!editHostelData) return;
-    setEditHostelData({
-      ...editHostelData,
-      rooms: editHostelData.rooms.map(r => r.id === roomId ? { ...r, isAvailable: !r.isAvailable } : r)
-    });
-  };
-
-  const addRoom = (number: string) => {
-    if (!editHostelData || !number) return;
-    const newRoom: Room = {
-      id: 'room_' + Date.now(),
-      number,
-      isAvailable: true,
-      capacity: 2,
-      occupants: 0,
-      photos: ['https://picsum.photos/seed/room/400/300']
+    if (!editHostelData || !user) return;
+    // PRD re-verification trigger: an owner changing the name, area or
+    // address sends the listing back to 'pending' for admin review.
+    const orig = hostels.find(h => h.id === editHostelData.id);
+    const identityChanged = !!orig && (orig.name !== editHostelData.name
+      || orig.area !== editHostelData.area || orig.address !== editHostelData.address);
+    const payload = {
+      name: editHostelData.name,
+      area: editHostelData.area,
+      address: editHostelData.address,
+      description: editHostelData.description,
+      pricePerBedMonthly: editHostelData.pricePerBedMonthly,
+      messAvailable: editHostelData.messAvailable,
+      messPriceMonthly: editHostelData.messPriceMonthly,
+      securityDeposit: editHostelData.securityDeposit,
+      otherChargesNote: editHostelData.otherChargesNote,
+      totalBeds: editHostelData.totalBeds,
+      bedsAvailable: editHostelData.bedsAvailable,
+      availableFrom: editHostelData.availableFrom,
+      rules: editHostelData.rules,
+      ...(user.role === 'owner' && identityChanged ? { status: 'pending' as const } : {}),
+      updatedAt: serverTimestamp(),
     };
-    setEditHostelData({ ...editHostelData, rooms: [...editHostelData.rooms, newRoom] });
+    try {
+      await updateDoc(doc(db, "hostels", editHostelData.id), payload);
+      setHostels(prev => prev.map(h => h.id === editHostelData.id ? { ...h, ...editHostelData, ...(user.role === 'owner' && identityChanged ? { status: 'pending' as const } : {}) } : h));
+      alert(identityChanged && user.role === 'owner'
+        ? "Saved — because the name, area or address changed, the listing is back in the verification queue."
+        : "Listing updated successfully!");
+      setView(user.role === 'admin' ? 'admin-dashboard' : 'owner-dashboard');
+    } catch (error) {
+      console.error("Save error:", error);
+      alert("Could not save the listing. Check your connection and try again.");
+    }
   };
 
-  const removeRoom = (roomId: string) => {
-    if (!editHostelData) return;
-    setEditHostelData({ ...editHostelData, rooms: editHostelData.rooms.filter(r => r.id !== roomId) });
-  };
 
-  const handleHostelStatusChange = async (id: string, newStatus: 'approved' | 'rejected') => {
-  try {
-    // 1. Find the specific document in Firebase
-    const hostelRef = doc(db, "hostels", id);
-    
-    // 2. Update the status in the Cloud
-    await updateDoc(hostelRef, { status: newStatus });
-    
-    // 3. Update the local screen so the hostel moves to the "Approved" list
-    setHostels(prev => prev.map(h => h.id === id ? { ...h, status: newStatus } : h));
-    
-    alert(`Hostel has been ${newStatus}!`);
-  } catch (error) {
-    console.error("Admin Error:", error);
-    alert("Failed to update status. Check your Firebase Rules.");
-  }
-};
-  const handleDeleteHostel = (id: string) => {
-    if (window.confirm("Are you sure you want to permanently delete this listing? This cannot be undone.")) {
+
+
+  const handleHostelStatusChange = async (id: string, newStatus: 'live' | 'rejected') => {
+    try {
+      const hostelRef = doc(db, "hostels", id);
+      const patch = newStatus === 'live'
+        ? { status: 'live' as const, verifiedAt: serverTimestamp(), verifiedBy: user?.id ?? '', updatedAt: serverTimestamp() }
+        : { status: 'rejected' as const, updatedAt: serverTimestamp() };
+      await updateDoc(hostelRef, patch);
+      setHostels(prev => prev.map(h => h.id === id ? { ...h, status: newStatus, verifiedAt: new Date().toISOString(), verifiedBy: user?.id ?? h.verifiedBy } : h));
+      alert(`Hostel has been ${newStatus === 'live' ? 'approved and published' : 'rejected'}!`);
+    } catch (error) {
+      console.error("Admin Error:", error);
+      alert("Failed to update status. Check your Firebase Rules.");
+    }
+  };
+  const handleDeleteHostel = async (id: string) => {
+    if (!window.confirm("Are you sure you want to permanently delete this listing? This cannot be undone.")) return;
+    try {
+      await deleteDoc(doc(db, "hostels", id));
       setHostels(prev => prev.filter(h => h.id !== id));
+    } catch (error) {
+      console.error("Delete error:", error);
+      alert("Could not delete the listing. Check your connection and try again.");
     }
   };
 
@@ -337,18 +360,6 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     }
   };
 
-  const handleRoomImageSelect = (roomId: string, e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && editHostelData) {
-      const newPhotos = Array.from(files).map((file: File) => URL.createObjectURL(file));
-      setEditHostelData({
-        ...editHostelData,
-        rooms: editHostelData.rooms.map(r => 
-          r.id === roomId ? { ...r, photos: [...r.photos, ...newPhotos] } : r
-        )
-      });
-    }
-  };
 
   // Phase 2: the inquiry behind the review form. A review is only possible
   // for an inquiry the owner has marked 'stayed' (also enforced in rules).
@@ -363,7 +374,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     e.preventDefault();
     if (!selectedHostel || !user || !stayedInquiry || !reviewComment.trim()) return;
     try {
-      const saved = await submitReview(stayedInquiry, user.name, reviewRating, reviewComment.trim());
+      const saved = await submitReview(stayedInquiry, user.fullName, reviewRating, reviewComment.trim());
       setReviews(prev => [saved, ...prev.filter(r => r.id !== saved.id)]);
       setReviewComment('');
       alert("Thank you! Your verified review is now live.");
@@ -375,7 +386,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmitInquiry = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedHostel || !user || !inquiryMessage.trim()) return;
+    if (!selectedHostel || !user || !inquiryPhone.trim() || !inquiryMoveIn) return;
     setInquiryBusy(true);
     try {
       const saved = await submitInquiry({
@@ -383,13 +394,20 @@ const [isSubmitting, setIsSubmitting] = useState(false);
         hostelName: selectedHostel.name,
         ownerId: selectedHostel.ownerId,
         studentId: user.id,
-        studentName: user.name,
-        studentPhone: inquiryPhone.trim() || undefined,
+        studentName: user.fullName,
+        studentPhone: inquiryPhone.trim(),
         message: inquiryMessage.trim(),
-        moveIn: inquiryMoveIn.trim() || undefined,
+        moveInDate: inquiryMoveIn,
+        bedsNeeded: inquiryBeds,
       });
       setInquiries(prev => [saved, ...prev]);
       setInquirySent(true);
+      // Owner phone reveal (PRD §11): the owner's number comes from their
+      // profile, shown only in the confirmation after an inquiry is sent.
+      try {
+        const owner = await fetchProfile(selectedHostel.ownerId);
+        if (owner?.phone) setOwnerPhone(owner.phone);
+      } catch { /* confirmation still works without the number */ }
     } catch (error) {
       console.error("Inquiry error:", error);
       alert("Could not send your inquiry. Check your connection and try again.");
@@ -416,8 +434,8 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       setView('signup');
       return;
     }
-    if (!newName.trim() || !newCity.trim()) {
-      alert("Please enter the hostel name and city first!");
+    if (!newName.trim() || !newArea.trim()) {
+      alert("Please enter the hostel name and area first!");
       return;
     }
     setIsSubmitting(true);
@@ -432,30 +450,45 @@ const [isSubmitting, setIsSubmitting] = useState(false);
           if (!proceed) { setIsSubmitting(false); return; }
         }
       }
+      // R2: minimal PRD §8 document. The full listing form (R3) collects
+      // every field; until then the listing enters the queue with the
+      // required fields present and honest zero/empty values.
       await addDoc(collection(db, "hostels"), {
         name: newName.trim(),
-        city: newCity.trim(),
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        ownerId: user.id,
-        photos: photoUrls.length > 0 ? photoUrls : ['https://picsum.photos/seed/hostel/800/600'],
-        gender: 'Boys',
-        minRent: 10000,
-        maxRent: 10000,
-        admissionCharges: 0,
-        securityFee: 0,
-        address: '',
+        area: newArea.trim(),
         description: '',
-        rooms: [],
-        whatsappNumber: '',
-        isVerified: false
+        address: '',
+        latitude: COMSATS.latitude,
+        longitude: COMSATS.longitude,
+        gender: 'boys',
+        roomTypes: [],
+        pricePerBedMonthly: 0,
+        messAvailable: false,
+        messPriceMonthly: 0,
+        securityDeposit: 0,
+        otherChargesNote: '',
+        totalBeds: 0,
+        bedsAvailable: 0,
+        availableFrom: new Date().toISOString().split('T')[0],
+        amenities: [],
+        rules: '',
+        photos: photoUrls,
+        verificationDocs: [],
+        nearbyUniversities: [COMSATS.name],
+        status: 'pending',
+        rejectionReason: '',
+        verifiedAt: '',
+        verifiedBy: '',
+        ownerId: user.id,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
       alert("Listing submitted for admin moderation. We'll verify it soon.");
       setNewName('');
-      setNewCity('');
+      setNewArea('');
       setTempUploadedImages([]);
       setTempImageFiles([]);
-      setView(user.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard');
+      setView(user.role === 'admin' ? 'admin-dashboard' : 'owner-dashboard');
     } catch (error) {
       console.error("Firebase Error:", error);
       alert("Error saving! Check your internet or Firebase Rules.");
@@ -517,20 +550,19 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                       onChange={(e) => setGenderFilter(e.target.value as Gender | 'All')}
                     >
                       <option value="All">All Genders</option>
-                      <option value="Boys">{t.boys}</option>
-                      <option value="Girls">{t.girls}</option>
-                      <option value="Co-Living">{t.coLiving}</option>
+                      <option value="boys">{t.boys}</option>
+                      <option value="girls">{t.girls}</option>
                     </select>
                     <select
                       className="flex-grow md:min-w-[180px] p-4 bg-gray-50 border-none rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500 cursor-pointer"
                       value={sortBy}
                       onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
                     >
-                      <option value="recommended">Sort: Recommended</option>
+                      <option value="recommended">Sort: Newest Verified</option>
                       <option value="rent-asc">Rent: Low to High</option>
                       <option value="rent-desc">Rent: High to Low</option>
-                      <option value="rating">Top Rated</option>
                       <option value="distance">Nearest to COMSATS</option>
+                      <option value="beds">Most Beds Free</option>
                     </select>
                     <Button variant="outline" className="md:hidden rounded-2xl" onClick={() => {}}>
                       <Info className="w-5 h-5" />
@@ -638,103 +670,122 @@ const [isSubmitting, setIsSubmitting] = useState(false);
             <button className="mb-8 flex items-center gap-1 text-sm font-black text-gray-400 hover:text-blue-600 transition-colors uppercase tracking-widest" onClick={() => setView('home')}>
               <ChevronLeft className="w-5 h-5" /> {t.searchHostels}
             </button>
-            
+
             <div className="space-y-10">
                <div className="aspect-[16/9] md:aspect-[21/9] rounded-[2.5rem] overflow-hidden shadow-2xl border-4 border-white bg-white">
-                  <img src={selectedHostel.photos[0]} className="w-full h-full object-cover" alt="" />
+                  <img src={selectedHostel.photos[0] || 'https://picsum.photos/seed/hostela/800/600'} className="w-full h-full object-cover" alt={selectedHostel.name} />
                </div>
+               {selectedHostel.photos.length > 1 && (
+                 <div className="flex gap-3 overflow-x-auto pb-2">
+                   {selectedHostel.photos.slice(1).map((p, idx) => (
+                     <img key={idx} src={p} className="w-40 h-28 rounded-2xl object-cover border-2 border-white shadow-sm flex-shrink-0" alt={`${selectedHostel.name} photo ${idx + 2}`} />
+                   ))}
+                 </div>
+               )}
 
                <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
                   <div className="md:col-span-2 space-y-10">
                      <div className="bg-white p-8 md:p-10 rounded-[2rem] border border-gray-100 shadow-sm">
                         <div className="flex flex-wrap gap-2 mb-4">
-                          <span className="px-3 py-1 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-widest rounded-full">{t.verified}</span>
-                          <span className="px-3 py-1 bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedHostel.gender}</span>
-                          {selectedHostel.distanceKm !== undefined && (
-                            <span className="px-3 py-1 bg-gray-100 text-gray-600 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedHostel.distanceKm} km from COMSATS</span>
+                          {selectedHostel.status === 'live' && (
+                            <span className="px-3 py-1 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-widest rounded-full">{t.verified}</span>
                           )}
+                          <span className="px-3 py-1 bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedHostel.gender === 'boys' ? 'Boys' : 'Girls'}</span>
+                          <span className="px-3 py-1 bg-gray-100 text-gray-600 text-[10px] font-black uppercase tracking-widest rounded-full">{distanceKm(COMSATS.latitude, COMSATS.longitude, selectedHostel.latitude, selectedHostel.longitude)} km from COMSATS</span>
                         </div>
-                        <h2 className="text-3xl font-black mb-6 text-gray-900">{selectedHostel.name}</h2>
+                        <h2 className="text-3xl font-black mb-2 text-gray-900">{selectedHostel.name}</h2>
+                        <p className="text-sm font-bold text-gray-500 mb-6">{selectedHostel.area} • {selectedHostel.address}</p>
                         <p className="text-gray-600 leading-relaxed text-lg">{selectedHostel.description}</p>
-                        
+
                         <div className="grid grid-cols-2 gap-8 mt-10 pt-10 border-t border-gray-50">
                            <div className="space-y-1">
-                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">{t.admissionCharges}</p>
-                              <p className="text-xl font-black text-gray-900">PKR {selectedHostel.admissionCharges.toLocaleString()}</p>
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Per bed / month</p>
+                              <p className="text-xl font-black text-gray-900">PKR {selectedHostel.pricePerBedMonthly.toLocaleString()}</p>
                            </div>
                            <div className="space-y-1">
-                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">{t.securityFee}</p>
-                              <p className="text-xl font-black text-gray-900">PKR {selectedHostel.securityFee.toLocaleString()}</p>
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Mess</p>
+                              <p className="text-xl font-black text-gray-900">{selectedHostel.messAvailable ? `PKR ${selectedHostel.messPriceMonthly.toLocaleString()} / month` : 'No mess'}</p>
+                           </div>
+                           <div className="space-y-1">
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Security deposit</p>
+                              <p className="text-xl font-black text-gray-900">PKR {selectedHostel.securityDeposit.toLocaleString()}</p>
+                           </div>
+                           <div className="space-y-1">
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Other charges</p>
+                              <p className="text-xl font-black text-gray-900">{selectedHostel.otherChargesNote || 'None stated'}</p>
                            </div>
                         </div>
                      </div>
 
                      <div className="bg-white p-8 md:p-10 rounded-[2rem] border border-gray-100 shadow-sm">
                         <h2 className="text-xl font-black mb-8 text-gray-900">{t.availability}</h2>
-                        <div className="grid grid-cols-1 gap-6">
-                           {selectedHostel.rooms.map(room => (
-                             <div key={room.id} className="p-5 bg-gray-50 rounded-2xl flex flex-col gap-4">
-                                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                                  <div className="flex items-center gap-4">
-                                     <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center border border-gray-100 shadow-sm font-black text-blue-600">
-                                        #{room.number}
-                                     </div>
-                                     <div>
-                                        <p className="font-bold text-gray-900">Capacity: {room.capacity} Persons</p>
-                                        <p className="text-xs text-gray-500">{room.occupants} Current Residents</p>
-                                     </div>
-                                  </div>
-                                  <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                                    room.isAvailable ? 'bg-green-500 text-white shadow-lg shadow-green-100' : 'bg-gray-200 text-gray-400'
-                                  }`}>
-                                     {room.isAvailable ? 'Available Now' : 'Occupied'}
-                                  </span>
-                                </div>
-                                
-                                {/* Room Photos Section */}
-                                {room.photos.length > 0 && (
-                                  <div className="flex gap-2 overflow-x-auto pb-2 pt-2 snap-x scrollbar-hide">
-                                    {room.photos.map((p, idx) => (
-                                      <div key={idx} className="flex-shrink-0 w-32 h-24 rounded-xl overflow-hidden border-2 border-white shadow-sm snap-center">
-                                        <img src={p} className="w-full h-full object-cover" alt={`Room ${room.number}`} />
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                             </div>
-                           ))}
+                        <div className="grid grid-cols-3 gap-4 text-center">
+                           <div className="p-4 bg-gray-50 rounded-2xl">
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Total beds</p>
+                              <p className="text-2xl font-black text-gray-900">{selectedHostel.totalBeds}</p>
+                           </div>
+                           <div className="p-4 bg-gray-50 rounded-2xl">
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Beds free</p>
+                              <p className="text-2xl font-black text-green-600">{selectedHostel.bedsAvailable}</p>
+                           </div>
+                           <div className="p-4 bg-gray-50 rounded-2xl">
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Available from</p>
+                              <p className="text-sm font-black text-gray-900 mt-1">{selectedHostel.availableFrom || '—'}</p>
+                           </div>
                         </div>
+                        {selectedHostel.roomTypes.length > 0 && (
+                          <div className="flex flex-wrap gap-2 mt-6">
+                            {selectedHostel.roomTypes.map(rt => (
+                              <span key={rt} className="px-3 py-1 bg-blue-50 text-blue-700 text-[10px] font-black uppercase tracking-widest rounded-full">{rt}</span>
+                            ))}
+                          </div>
+                        )}
+                        {selectedHostel.amenities.length > 0 && (
+                          <div className="mt-8">
+                            <h3 className="text-sm font-black text-gray-900 mb-3">Amenities</h3>
+                            <div className="flex flex-wrap gap-2">
+                              {selectedHostel.amenities.map(a => (
+                                <span key={a} className="px-3 py-1 bg-gray-100 text-gray-700 text-xs font-bold rounded-full">{a}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {selectedHostel.rules && (
+                          <div className="mt-8">
+                            <h3 className="text-sm font-black text-gray-900 mb-3">House rules</h3>
+                            <p className="text-sm text-gray-600 leading-relaxed">{selectedHostel.rules}</p>
+                          </div>
+                        )}
                      </div>
 
-                     {selectedHostel.mapUrl && (
-                        <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm space-y-4">
-                           <div className="flex items-center justify-between">
-                              <h2 className="text-xl font-black text-gray-900">Exact Location</h2>
-                              <a 
-                                href={selectedHostel.mapUrl} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-2 text-xs font-black text-blue-600 bg-blue-50 px-3 py-2 rounded-xl hover:bg-blue-100 transition-all"
-                              >
-                                <ExternalLink className="w-3 h-3" /> View on Maps
-                              </a>
-                           </div>
-                           <div className="aspect-video rounded-[1.5rem] overflow-hidden border-2 border-gray-50">
-                              <iframe 
-                                src={selectedHostel.mapUrl?.includes('embed') ? selectedHostel.mapUrl : `https://www.google.com/maps/embed?pb=PLACEHOLDER`} 
-                                width="100%" 
-                                height="100%" 
-                                className="border-none" 
-                                loading="lazy"
-                              ></iframe>
-                           </div>
+                     <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between">
+                           <h2 className="text-xl font-black text-gray-900">Location</h2>
+                           <a
+                             href={`https://www.openstreetmap.org/?mlat=${selectedHostel.latitude}&mlon=${selectedHostel.longitude}#map=16/${selectedHostel.latitude}/${selectedHostel.longitude}`}
+                             target="_blank"
+                             rel="noopener noreferrer"
+                             className="flex items-center gap-2 text-xs font-black text-blue-600 bg-blue-50 px-3 py-2 rounded-xl hover:bg-blue-100 transition-all"
+                           >
+                             <ExternalLink className="w-3 h-3" /> View on OpenStreetMap
+                           </a>
                         </div>
-                     )}
+                        <div className="aspect-video rounded-[1.5rem] overflow-hidden border-2 border-gray-50">
+                           <iframe
+                             title={`Map of ${selectedHostel.name}`}
+                             src={`https://www.openstreetmap.org/export/embed.html?bbox=${selectedHostel.longitude - 0.01}%2C${selectedHostel.latitude - 0.01}%2C${selectedHostel.longitude + 0.01}%2C${selectedHostel.latitude + 0.01}&layer=mapnik&marker=${selectedHostel.latitude}%2C${selectedHostel.longitude}`}
+                             width="100%"
+                             height="100%"
+                             className="border-none"
+                             loading="lazy"
+                           ></iframe>
+                        </div>
+                     </div>
 
                      <ReviewsSection hostel={selectedHostel} reviews={reviews} t={t} user={user} stayedInquiry={stayedInquiry} myReview={myReviewForSelected} reviewRating={reviewRating} onRatingChange={setReviewRating} reviewComment={reviewComment} onCommentChange={setReviewComment} onSubmitReview={handleStudentAddReview} onSignIn={() => setView('login')} />
                   </div>
 
-<InquiryPanel hostel={selectedHostel} user={user} sent={inquirySent} busy={inquiryBusy} message={inquiryMessage} onMessageChange={setInquiryMessage} phone={inquiryPhone} onPhoneChange={setInquiryPhone} moveIn={inquiryMoveIn} onMoveInChange={setInquiryMoveIn} onSubmitInquiry={handleSubmitInquiry} onSignIn={() => setView('login')} />
+<InquiryPanel hostel={selectedHostel} user={user} sent={inquirySent} busy={inquiryBusy} message={inquiryMessage} onMessageChange={setInquiryMessage} phone={inquiryPhone} onPhoneChange={setInquiryPhone} moveIn={inquiryMoveIn} onMoveInChange={setInquiryMoveIn} bedsNeeded={inquiryBeds} onBedsChange={setInquiryBeds} ownerPhone={ownerPhone} onSubmitInquiry={handleSubmitInquiry} onSignIn={() => setView('login')} />
                </div>
             </div>
           </div>
@@ -747,11 +798,11 @@ const [isSubmitting, setIsSubmitting] = useState(false);
            <div className="max-w-6xl mx-auto py-12 px-4 animate-in fade-in duration-500">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
                  <div>
-                    <h2 className="text-4xl font-black text-gray-900">{user?.role === 'Admin' ? t.adminPortal : t.ownerPortal}</h2>
+                    <h2 className="text-4xl font-black text-gray-900">{user?.role === 'admin' ? t.adminPortal : t.ownerPortal}</h2>
                     <p className="text-gray-500 mt-2 font-medium">Manage properties and room availability.</p>
                  </div>
                  <div className="flex flex-wrap gap-3">
-                   {user?.role === 'Admin' && (
+                   {user?.role === 'admin' && (
                      <Button variant="outline" onClick={handleSeedListings} size="lg" className="rounded-2xl gap-2">Load Islamabad Demo Listings</Button>
                    )}
                    {seedMsg && <p className="w-full text-xs font-semibold text-gray-500">{seedMsg}</p>}
@@ -760,14 +811,14 @@ const [isSubmitting, setIsSubmitting] = useState(false);
               </div>
 
               <div className="grid grid-cols-1 gap-8">
-                {user?.role === 'Owner' && !user?.isApproved && (
+                {user?.role === 'owner' && user?.status === 'suspended' && (
                   <div className="p-5 bg-yellow-50 border-2 border-yellow-100 rounded-2xl flex items-center gap-3">
                     <AlertCircle className="w-6 h-6 text-yellow-600 flex-shrink-0" />
-                    <p className="text-sm font-bold text-yellow-800">Your owner account is waiting for admin approval. You can prepare listings, but they cannot go live until an admin approves your account.</p>
+                    <p className="text-sm font-bold text-yellow-800">Your account is suspended. Your listings are hidden from public search until an admin reinstates your account.</p>
                   </div>
                 )}
                 {/* --- START OF VERIFICATION DASHBOARD MODIFICATION --- */}
-{user?.role === 'Admin' && hostels.filter(h => h.status === 'pending').length > 0 && (
+{user?.role === 'admin' && hostels.filter(h => h.status === 'pending').length > 0 && (
   <div className="mb-12 bg-white p-8 rounded-[2.5rem] border-2 border-yellow-100 shadow-xl shadow-yellow-50">
     <div className="flex items-center gap-3 mb-8">
       <div className="bg-yellow-100 p-2 rounded-xl">
@@ -786,7 +837,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
             <img src={h.photos[0]} className="w-16 h-16 rounded-xl object-cover" alt="" />
             <div>
               <p className="font-bold text-gray-900">{h.name}</p>
-              <p className="text-xs text-gray-400 uppercase font-black tracking-widest">{h.city} • {h.gender}</p>
+              <p className="text-xs text-gray-400 uppercase font-black tracking-widest">{h.area} • {h.gender === 'boys' ? 'Boys' : 'Girls'}</p>
             </div>
           </div>
           <div className="flex gap-2 w-full md:w-auto">
@@ -794,7 +845,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
               fullWidth 
               variant="secondary" 
               className="rounded-xl" 
-              onClick={() => handleHostelStatusChange(h.id, 'approved')}
+              onClick={() => handleHostelStatusChange(h.id, 'live')}
             >
               Approve
             </Button>
@@ -826,20 +877,21 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                                <div className="flex items-center gap-2">
                                   <h3 className="text-2xl font-black text-gray-900">{h.name}</h3>
                                   <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest ${
-                                    h.status === 'approved' ? 'bg-green-100 text-green-700' : 
-                                    h.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'
+                                    h.status === 'live' ? 'bg-green-100 text-green-700' :
+                                    h.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
+                                    h.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-gray-200 text-gray-500'
                                   }`}>{h.status}</span>
                                </div>
                                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest flex items-center gap-1">
-                                 <MapPin className="w-3 h-3" /> {h.city} • {h.gender}
+                                 <MapPin className="w-3 h-3" /> {h.area} • {h.gender === 'boys' ? 'Boys' : 'Girls'}
                                </p>
                             </div>
                             <div className="flex gap-2">
-                               {user?.role === 'Admin' && (
+                               {user?.role === 'admin' && (
                                  <>
                                    {h.status === 'pending' && (
                                       <>
-                                         <Button size="sm" variant="secondary" onClick={() => handleHostelStatusChange(h.id, 'approved')}>{t.approve}</Button>
+                                         <Button size="sm" variant="secondary" onClick={() => handleHostelStatusChange(h.id, 'live')}>{t.approve}</Button>
                                          <Button size="sm" variant="danger" onClick={() => handleHostelStatusChange(h.id, 'rejected')}>{t.reject}</Button>
                                       </>
                                    )}
@@ -851,20 +903,20 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                          </div>
                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                             <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Total Rooms</p>
-                               <p className="text-lg font-black text-gray-900">{h.rooms.length}</p>
+                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Total Beds</p>
+                               <p className="text-lg font-black text-gray-900">{h.totalBeds}</p>
                             </div>
                             <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Available</p>
-                               <p className="text-lg font-black text-green-600">{h.rooms.filter(r => r.isAvailable).length}</p>
+                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Beds Free</p>
+                               <p className="text-lg font-black text-green-600">{h.bedsAvailable}</p>
                             </div>
                             <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Min Rent</p>
-                               <p className="text-lg font-black text-blue-600">Rs. {h.minRent.toLocaleString()}</p>
+                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Per Bed / Month</p>
+                               <p className="text-lg font-black text-blue-600">Rs. {h.pricePerBedMonthly.toLocaleString()}</p>
                             </div>
                             <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Security</p>
-                               <p className="text-lg font-black text-gray-900">Rs. {h.securityFee.toLocaleString()}</p>
+                               <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest mb-1">Deposit</p>
+                               <p className="text-lg font-black text-gray-900">Rs. {h.securityDeposit.toLocaleString()}</p>
                             </div>
                          </div>
                       </div>
@@ -879,149 +931,88 @@ const [isSubmitting, setIsSubmitting] = useState(false);
               <div className="bg-white p-8 md:p-12 rounded-[3rem] border border-gray-100 shadow-2xl relative">
                  <div className="flex items-center justify-between mb-12">
                     <h2 className="text-3xl font-black text-gray-900">Manage Property</h2>
-                    <button className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors" onClick={() => setView(user?.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard')}>
+                    <button className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors" onClick={() => setView(user?.role === 'admin' ? 'admin-dashboard' : 'owner-dashboard')}>
                       <X className="w-6 h-6" />
                     </button>
                  </div>
 
-                 {/* Restrictions Info for Owners */}
-                 {user?.role === 'Owner' && (
+                 {user?.role === 'owner' && (
                     <div className="mb-8 p-4 bg-blue-50 border border-blue-100 rounded-2xl flex items-center gap-3">
                        <Info className="w-5 h-5 text-blue-600" />
-                       <p className="text-xs font-bold text-blue-800">You can only edit room availability and room photos for verified listings.</p>
+                       <p className="text-xs font-bold text-blue-800">You can edit pricing, beds and availability. Changing the name, area or address sends the listing back for admin verification.</p>
                     </div>
                  )}
-                 
-                 <form className="space-y-12" onSubmit={saveHostelChanges}>
+
+                 <form className="space-y-8" onSubmit={saveHostelChanges}>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                        <div className="space-y-2">
                           <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Hostel Name</label>
-                          <input 
-                            type="text" 
-                            className={`w-full p-4 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none ${
-                              user?.role === 'Owner' 
-                                ? 'bg-gray-100 opacity-70 cursor-not-allowed' 
-                                : 'bg-gray-50'
-                            }`}
-                            value={editHostelData.name} 
-                            disabled={user?.role === 'Owner'} 
-                            onChange={(e) => setEditHostelData({ ...editHostelData, name: e.target.value })} 
-                          />
+                          <input type="text" className={`w-full p-4 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none ${user?.role === 'owner' ? 'bg-gray-100 opacity-70 cursor-not-allowed' : 'bg-gray-50'}`}
+                            value={editHostelData.name} disabled={user?.role === 'owner'}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, name: e.target.value })} />
                        </div>
                        <div className="space-y-2">
-                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Base Rent (PKR)</label>
-                          <input 
-                            type="number" 
-                            className={`w-full p-4 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none ${
-                              user?.role === 'Owner' 
-                                ? 'bg-gray-100 opacity-70 cursor-not-allowed' 
-                                : 'bg-gray-50'
-                            }`}
-                            value={editHostelData.minRent} 
-                            disabled={user?.role === 'Owner'} 
-                            onChange={(e) => setEditHostelData({ ...editHostelData, minRent: Number(e.target.value) })} 
-                          />
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Area</label>
+                          <input type="text" className={`w-full p-4 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none ${user?.role === 'owner' ? 'bg-gray-100 opacity-70 cursor-not-allowed' : 'bg-gray-50'}`}
+                            value={editHostelData.area} disabled={user?.role === 'owner'}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, area: e.target.value })} />
+                       </div>
+                       <div className="space-y-2 md:col-span-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Full Address</label>
+                          <input type="text" className={`w-full p-4 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none ${user?.role === 'owner' ? 'bg-gray-100 opacity-70 cursor-not-allowed' : 'bg-gray-50'}`}
+                            value={editHostelData.address} disabled={user?.role === 'owner'}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, address: e.target.value })} />
+                       </div>
+                       <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Price per bed / month (PKR)</label>
+                          <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.pricePerBedMonthly}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, pricePerBedMonthly: Number(e.target.value) })} />
+                       </div>
+                       <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Security deposit (PKR)</label>
+                          <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.securityDeposit}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, securityDeposit: Number(e.target.value) })} />
+                       </div>
+                       <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Total beds</label>
+                          <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.totalBeds}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, totalBeds: Number(e.target.value) })} />
+                       </div>
+                       <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Beds available</label>
+                          <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.bedsAvailable}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, bedsAvailable: Number(e.target.value) })} />
+                       </div>
+                       <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Available from</label>
+                          <input type="date" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.availableFrom}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, availableFrom: e.target.value })} />
+                       </div>
+                       <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Mess price / month (PKR, 0 = no mess)</label>
+                          <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.messPriceMonthly}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, messPriceMonthly: Number(e.target.value), messAvailable: Number(e.target.value) > 0 })} />
+                       </div>
+                       <div className="space-y-2 md:col-span-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Description</label>
+                          <textarea rows={3} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.description}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, description: e.target.value })} />
+                       </div>
+                       <div className="space-y-2 md:col-span-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">House rules</label>
+                          <textarea rows={2} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={editHostelData.rules}
+                            onChange={(e) => setEditHostelData({ ...editHostelData, rules: e.target.value })} />
                        </div>
                     </div>
-
-                    <div className="space-y-8 pt-8 border-t border-gray-100">
-                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                          <h3 className="text-xl font-black text-gray-900">Inventory & Room Photos</h3>
-                          {user?.role === 'Admin' && (
-                            <div className="flex gap-2">
-                               <input type="text" id="new-room-num" placeholder="Room #" className="p-3 bg-gray-50 border-none rounded-xl text-xs font-bold w-28 focus:ring-2 focus:ring-blue-500" />
-                               <Button size="sm" type="button" className="rounded-xl px-5" onClick={() => { const i = document.getElementById('new-room-num') as HTMLInputElement; addRoom(i.value); i.value = ''; }}>Add Room</Button>
-                            </div>
-                          )}
-                       </div>
-                       
-                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                          {editHostelData.rooms.map(room => (
-                             <div key={room.id} className="p-6 bg-gray-50 rounded-2xl border border-gray-100 flex flex-col gap-6 relative group/room">
-                                <div className="flex items-center justify-between">
-                                   <div className="flex items-center gap-3">
-                                      <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center font-bold text-blue-600 shadow-sm border border-gray-50">#{room.number}</div>
-                                      <p className="font-black text-gray-900 uppercase text-xs tracking-widest">Room</p>
-                                   </div>
-                                   <div className="flex gap-2">
-                                      <button type="button" onClick={() => toggleRoomAvailability(room.id)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                                        room.isAvailable ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'bg-gray-200 text-gray-400'
-                                      }`}>
-                                         {room.isAvailable ? 'Available' : 'Booked'}
-                                      </button>
-                                      {user?.role === 'Admin' && (
-                                        <button type="button" onClick={() => removeRoom(room.id)} className="text-red-400 hover:text-red-600 p-2 transition-colors"><Trash2 className="w-5 h-5" /></button>
-                                      )}
-                                   </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                   <div className="space-y-1">
-                                      <label className="text-[8px] font-black uppercase text-gray-400">Capacity</label>
-                                      <input 
-                                        type="number" 
-                                        className={`w-full p-3 bg-white border-none rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 ${
-                                          user?.role === 'Owner' ? 'opacity-50 cursor-not-allowed' : ''
-                                        }`} 
-                                        value={room.capacity} 
-                                        disabled={user?.role === 'Owner'}
-                                        onChange={(e) => {
-                                         const rooms = editHostelData.rooms.map(r => r.id === room.id ? { ...r, capacity: Number(e.target.value) } : r);
-                                         setEditHostelData({ ...editHostelData, rooms });
-                                      }} />
-                                   </div>
-                                   <div className="space-y-1">
-                                      <label className="text-[8px] font-black uppercase text-gray-400">Residents</label>
-                                      <input 
-                                        type="number" 
-                                        className={`w-full p-3 bg-white border-none rounded-xl text-xs font-bold focus:ring-2 focus:ring-blue-500 ${
-                                          user?.role === 'Owner' ? 'opacity-50 cursor-not-allowed' : ''
-                                        }`} 
-                                        value={room.occupants} 
-                                        disabled={user?.role === 'Owner'}
-                                        onChange={(e) => {
-                                         const rooms = editHostelData.rooms.map(r => r.id === room.id ? { ...r, occupants: Number(e.target.value) } : r);
-                                         setEditHostelData({ ...editHostelData, rooms });
-                                      }} />
-                                   </div>
-                                </div>
-                                
-                                {/* Room Photos Management */}
-                                <div className="space-y-2">
-                                  <label className="text-[8px] font-black uppercase text-gray-400">Room Photos</label>
-                                  <div className="flex gap-2 overflow-x-auto pb-2">
-                                     {room.photos.map((p, idx) => (
-                                       <div key={idx} className="relative w-16 h-16 rounded-lg overflow-hidden border-2 border-white flex-shrink-0 shadow-sm group/img">
-                                         <img src={p} className="w-full h-full object-cover" alt="" />
-                                         <button 
-                                            type="button"
-                                            className="absolute top-0 right-0 p-1 bg-red-600 text-white opacity-0 group-hover/img:opacity-100 transition-opacity"
-                                            onClick={() => {
-                                              const newPhotos = room.photos.filter((_, i) => i !== idx);
-                                              setEditHostelData({
-                                                ...editHostelData,
-                                                rooms: editHostelData.rooms.map(r => r.id === room.id ? { ...r, photos: newPhotos } : r)
-                                              });
-                                            }}
-                                          >
-                                            <X className="w-3 h-3" />
-                                          </button>
-                                       </div>
-                                     ))}
-                                     <label className="w-16 h-16 rounded-lg bg-white border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors cursor-pointer">
-                                       <Camera className="w-5 h-5" />
-                                       <span className="text-[8px] font-black uppercase mt-1">Add</span>
-                                       <input type="file" multiple accept="image/*" className="hidden" onChange={(e) => handleRoomImageSelect(room.id, e)} />
-                                     </label>
-                                  </div>
-                                </div>
-                             </div>
-                          ))}
-                       </div>
-                    </div>
-                    
-                    <div className="flex gap-4">
-                      <Button fullWidth size="lg" className="rounded-2xl py-6 shadow-2xl shadow-blue-100 text-lg">Save Listing Changes</Button>
-                    </div>
+                    <Button fullWidth size="lg" className="rounded-2xl py-5 shadow-xl shadow-blue-100">Save Changes</Button>
                  </form>
               </div>
            </div>
@@ -1050,13 +1041,13 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   />
 </div>
                    <div className="space-y-2">
-  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Location / City</label>
+  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Area</label>
   <input 
     type="text" 
-    placeholder="e.g. Islamabad" 
+    placeholder="e.g. Chak Shahzad" 
     className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-    value={newCity}
-    onChange={(e) => setNewCity(e.target.value)} 
+    value={newArea}
+    onChange={(e) => setNewArea(e.target.value)} 
   />
 </div>
                  </div>
@@ -1090,7 +1081,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
                  <div className="space-y-4">
                     <Button fullWidth size="lg" disabled={isSubmitting} className="rounded-2xl py-6 shadow-xl shadow-blue-100 text-lg" onClick={handleSubmitListing}>{isSubmitting ? 'Submitting…' : 'Submit for Verification'}</Button>
-                    <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] text-center">Registration requires Gmail ID verification</p>
+                    <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] text-center">Listings are reviewed by an admin before they go live</p>
                  </div>
               </div>
            </div>
@@ -1154,13 +1145,32 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     </div>
                     {view === 'signup' && (
                       <div className="space-y-2">
+                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Phone number</label>
+                         <input type="tel" required
+                           className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                           value={authPhone} onChange={(e) => setAuthPhone(e.target.value)}
+                           placeholder="03XX-XXXXXXX" />
+                         <p className="text-[10px] text-gray-400 font-bold px-1">Required — owners reply to inquiries on this number.</p>
+                      </div>
+                    )}
+                    {view === 'signup' && authRole === 'student' && (
+                      <div className="space-y-2">
+                         <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">University (optional)</label>
+                         <input type="text"
+                           className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                           value={authUniversity} onChange={(e) => setAuthUniversity(e.target.value)}
+                           placeholder="e.g. COMSATS University Islamabad" />
+                      </div>
+                    )}
+                    {view === 'signup' && (
+                      <div className="space-y-2">
                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">I am a</label>
                          <div className="grid grid-cols-2 gap-3">
-                            <button type="button" onClick={() => setAuthRole('Student')} className={`py-3 rounded-2xl font-bold border-2 transition-all ${authRole === 'Student' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-500'}`}>Student</button>
-                            <button type="button" onClick={() => setAuthRole('Owner')} className={`py-3 rounded-2xl font-bold border-2 transition-all ${authRole === 'Owner' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-500'}`}>Hostel Owner</button>
+                            <button type="button" onClick={() => setAuthRole('student')} className={`py-3 rounded-2xl font-bold border-2 transition-all ${authRole === 'student' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-500'}`}>Student</button>
+                            <button type="button" onClick={() => setAuthRole('owner')} className={`py-3 rounded-2xl font-bold border-2 transition-all ${authRole === 'owner' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-500'}`}>Hostel Owner</button>
                          </div>
-                         {authRole === 'Owner' && (
-                           <p className="text-[10px] text-gray-400 font-bold px-1">Owner accounts need admin approval before listings can go live.</p>
+                         {authRole === 'owner' && (
+                           <p className="text-[10px] text-gray-400 font-bold px-1">Owners submit listings for admin verification before they go live.</p>
                          )}
                       </div>
                     )}
@@ -1168,6 +1178,12 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                       <div className="p-3 bg-red-50 text-red-500 text-[10px] font-black uppercase tracking-widest rounded-xl flex items-center gap-2 border border-red-100">
                         <AlertCircle className="w-4 h-4" /> {authError}
                       </div>
+                    )}
+                    {view === 'login' && (
+                      <button type="button" className="text-xs font-bold text-blue-600" onClick={handlePasswordReset}>Forgot password?</button>
+                    )}
+                    {authResetMsg && (
+                      <div className="p-3 bg-green-50 text-green-600 text-[10px] font-black uppercase tracking-widest rounded-xl border border-green-100">{authResetMsg}</div>
                     )}
                     <Button fullWidth className="rounded-2xl py-5 shadow-xl shadow-blue-200" size="lg" disabled={authBusy}>
                       {authBusy ? 'Please wait…' : view === 'login' ? 'Sign In' : 'Create Account'}

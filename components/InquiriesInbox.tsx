@@ -28,7 +28,7 @@ export function InquiriesInbox({ inquiries, onStatus }: Props) {
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
                               <p className="font-bold text-gray-900">{inq.studentName} <span className="text-gray-400 font-medium">→ {inq.hostelName}</span></p>
-                              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.studentPhone ? ` • ${inq.studentPhone}` : ''}{inq.moveIn ? ` • Move-in: ${inq.moveIn}` : ''}</p>
+                              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.studentPhone ? ` • ${inq.studentPhone}` : ''}{inq.moveInDate ? ` • Move-in: ${inq.moveInDate}` : ''} • {inq.bedsNeeded} bed(s)</p>
                             </div>
                             <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
                               inq.status === 'new' ? 'bg-yellow-100 text-yellow-700' :

@@ -35,19 +35,19 @@ export function Navbar({ lang, onLangChange, user, t, onNavigate, onLogout }: Pr
             </select>
             {user ? (
               <div className="flex items-center gap-3">
-                {user.role !== 'Student' && (
-                  <Button variant="ghost" size="sm" onClick={() => onNavigate(user.role === 'Admin' ? 'admin-dashboard' : 'owner-dashboard')} className="gap-2 text-xs">
+                {user.role !== 'student' && (
+                  <Button variant="ghost" size="sm" onClick={() => onNavigate(user.role === 'admin' ? 'admin-dashboard' : 'owner-dashboard')} className="gap-2 text-xs">
                     <LayoutDashboard className="w-3 h-3" /> Dashboard
                   </Button>
                 )}
-                {user.role === 'Student' && (
+                {user.role === 'student' && (
                   <Button variant="ghost" size="sm" onClick={() => onNavigate('my-inquiries')} className="gap-2 text-xs">
                     <Mail className="w-3 h-3" /> My Inquiries
                   </Button>
                 )}
                 <div className="flex items-center gap-3 bg-gray-50 pl-1 pr-3 py-1 rounded-full border border-gray-200">
                   <img src={user.avatar} className="w-8 h-8 rounded-full shadow-sm" alt="" />
-                  <span className="text-sm font-bold truncate max-w-[100px]">{user.name}</span>
+                  <span className="text-sm font-bold truncate max-w-[100px]">{user.fullName}</span>
                   <button onClick={handleLogout} className="text-gray-400 hover:text-red-500 transition-colors"><LogOut className="w-4 h-4" /></button>
                 </div>
               </div>

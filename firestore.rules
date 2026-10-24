@@ -1,8 +1,9 @@
 rules_version = '2';
 
-// Hostela Firestore security rules — Phase 1.
-// Roles live in users/{uid} (written at sign-up by auth.ts).
-// These rules are the real security boundary — the frontend checks are only UX.
+// Hostela Firestore security rules — R2 (PRD §8 contract).
+// Roles and statuses are the PRD's lowercase values; listings go
+// 'pending' -> 'live' (never 'approved'). These rules are the real security
+// boundary — the frontend checks are only UX.
 // Deploy with: firebase deploy --only firestore:rules
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -14,105 +15,133 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
     function isAdmin() {
-      return isSignedIn() && profile().role == 'Admin';
+      return isSignedIn() && profile().role == 'admin';
     }
-    function isApprovedOwner() {
-      return isSignedIn() && profile().role == 'Owner' && profile().isApproved == true;
+    function isOwner() {
+      return isSignedIn() && profile().role == 'owner';
+    }
+    function isActive() {
+      // Missing status on pre-R2 documents defaults to active (migration).
+      return isSignedIn() && profile().get('status', 'active') == 'active';
     }
 
-    // ---- User profiles ----
+    // ---- User profiles (PRD §8.1) ----
     match /users/{uid} {
-      // You can read your own profile; admins can read all (owner approvals).
+      // You can read your own profile; admins can read all.
       allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
-      // At sign-up you may create ONLY your own profile, and never as Admin.
+      // At sign-up you may create ONLY your own profile, as student or
+      // owner, always starting 'active'. Role and status are not yours to
+      // upgrade later (see update below).
       allow create: if isSignedIn()
         && request.auth.uid == uid
-        && request.resource.data.role in ['Student', 'Owner']
-        // R1 (audit S-2): approval state is not the user's choice. Students
-        // are active immediately; owners always start UNapproved. Before this
-        // constraint an owner could self-approve via a direct API write.
-        && ((request.resource.data.role == 'Student' && request.resource.data.isApproved == true)
-            || (request.resource.data.role == 'Owner' && request.resource.data.isApproved == false));
-      // You may edit your own profile but never your own role or approval.
+        && request.resource.data.role in ['student', 'owner']
+        && request.resource.data.status == 'active'
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() > 2;
+      // You may edit your own profile but never your own role or status.
+      // Admins may change role/status (promotion, suspension).
       allow update: if isAdmin()
         || (isSignedIn() && request.auth.uid == uid
             && request.resource.data.role == resource.data.role
-            && request.resource.data.isApproved == resource.data.isApproved);
+            && request.resource.data.get('status', 'active') == resource.data.get('status', 'active'));
       allow delete: if isAdmin();
     }
 
-    // ---- Hostel listings ----
+    // ---- Hostel listings (PRD §8.2) ----
     match /hostels/{hostelId} {
-      // Public can browse approved listings. Owners see their own at any
+      // Public can browse live listings. Owners see their own at any
       // status; admins see everything (the verification queue).
-      allow read: if resource.data.status == 'approved'
+      allow read: if resource.data.status == 'live'
         || (isSignedIn() && resource.data.ownerId == request.auth.uid)
         || isAdmin();
-      // Only approved owners can submit, always as themselves, always
-      // starting at 'pending' — verification cannot be skipped.
-      allow create: if (isApprovedOwner() || isAdmin())
+      // Owners (active) and admins submit, always as themselves, always
+      // starting at 'pending' — verification cannot be skipped. Only
+      // admins may create an already-verified listing (seed path).
+      allow create: if isActive()
+        && (isOwner() || isAdmin())
         && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.status == 'pending'
         && request.resource.data.name is string
         && request.resource.data.name.size() > 2
-        // Only admins may create an already-verified listing (seed path).
-        && (isAdmin() || request.resource.data.get('isVerified', false) == false);
-      // Owners may edit their own listing, but cannot approve/reject it or
-      // hand it to someone else. Admins can do anything (moderation).
+        && request.resource.data.pricePerBedMonthly is number
+        && request.resource.data.pricePerBedMonthly >= 0
+        && request.resource.data.photos is list
+        && request.resource.data.photos.size() <= 10
+        && (isAdmin() || request.resource.data.get('verifiedAt', '') == '');
+      // Owners may edit their own listing but cannot approve it, hand it
+      // to someone else, or forge verification. They may keep the current
+      // status or send it back to 'pending' (PRD re-verification trigger
+      // for name/address changes); only admins set 'live', 'rejected',
+      // 'paused' or 'suspended'. Admins can do anything (moderation).
       allow update: if isAdmin()
         || (isSignedIn()
             && resource.data.ownerId == request.auth.uid
             && request.resource.data.ownerId == resource.data.ownerId
-            && request.resource.data.status == resource.data.status
-            // Owners cannot grant themselves the Verified flag (audit S-3).
-            && request.resource.data.get('isVerified', false) == resource.data.get('isVerified', false));
+            && request.resource.data.get('verifiedAt', '') == resource.data.get('verifiedAt', '')
+            && request.resource.data.get('verifiedBy', '') == resource.data.get('verifiedBy', '')
+            && (request.resource.data.status == resource.data.status
+                || request.resource.data.status == 'pending'));
       allow delete: if isAdmin()
         || (isSignedIn() && resource.data.ownerId == request.auth.uid);
     }
 
-    // ---- Student inquiries (Phase 2) ----
+    // ---- Student inquiries (PRD §8.3) ----
     match /inquiries/{inquiryId} {
       // Visible only to the student who sent it, the hostel's owner, admins.
       allow read: if isAdmin()
         || (isSignedIn() && (resource.data.studentId == request.auth.uid
             || resource.data.ownerId == request.auth.uid));
-      // A signed-in user inquires for themselves, only about an approved
-      // listing, and every inquiry starts life as 'new'.
-      allow create: if isSignedIn()
+      // A signed-in active user inquires for themselves, only about a live
+      // listing, with a phone number (the owner's reply channel) and at
+      // least one bed. Every inquiry starts life as 'new'.
+      allow create: if isActive()
         && request.resource.data.studentId == request.auth.uid
         && request.resource.data.status == 'new'
-        && get(/databases/$(database)/documents/hostels/$(request.resource.data.hostelId)).data.status == 'approved'
+        && request.resource.data.studentPhone is string
+        && request.resource.data.studentPhone.size() > 0
+        && request.resource.data.bedsNeeded is number
+        && request.resource.data.bedsNeeded >= 1
+        && get(/databases/$(database)/documents/hostels/$(request.resource.data.hostelId)).data.status == 'live'
         && get(/databases/$(database)/documents/hostels/$(request.resource.data.hostelId)).data.ownerId == request.resource.data.ownerId;
       // Only the owner (or an admin) moves an inquiry through its lifecycle,
       // and may change nothing except the status.
       allow update: if isAdmin()
         || (isSignedIn()
             && resource.data.ownerId == request.auth.uid
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
             && request.resource.data.status in ['contacted', 'stayed', 'closed']);
       allow delete: if isAdmin();
     }
 
-    // ---- Reviews (Phase 2 — gated, one per confirmed stay) ----
+    // ---- Reviews (PRD §8.4 — gated, one per confirmed stay) ----
     match /reviews/{reviewId} {
-      // Reviews are public — they power the listing pages.
+      // Reviews are public — they power the listing pages. (The UI shows
+      // only status == 'visible'; reported/removed stay hidden.)
       allow read: if true;
       // The document id IS the inquiry id, so one review per inquiry.
       // Creation requires that inquiry to be marked 'stayed', to belong to
-      // the caller, and to be about the same hostel as the review.
-      allow create: if isSignedIn()
+      // the caller, to be about the same hostel, and to start 'visible'.
+      allow create: if isActive()
         && request.resource.data.studentId == request.auth.uid
         && request.resource.data.inquiryId == reviewId
+        && request.resource.data.status == 'visible'
+        && request.resource.data.rating is number
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() > 0
         && get(/databases/$(database)/documents/inquiries/$(reviewId)).data.status == 'stayed'
         && get(/databases/$(database)/documents/inquiries/$(reviewId)).data.studentId == request.auth.uid
         && get(/databases/$(database)/documents/inquiries/$(reviewId)).data.hostelId == request.resource.data.hostelId;
       // Authors may edit the text/rating of their own review, never rebind
-      // it to another stay or hostel. Admins may moderate (delete).
-      allow update: if isSignedIn()
-        && resource.data.studentId == request.auth.uid
-        && request.resource.data.studentId == resource.data.studentId
-        && request.resource.data.hostelId == resource.data.hostelId
-        && request.resource.data.inquiryId == resource.data.inquiryId;
+      // it or change its moderation status. Admins moderate (status).
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && resource.data.studentId == request.auth.uid
+            && request.resource.data.studentId == resource.data.studentId
+            && request.resource.data.hostelId == resource.data.hostelId
+            && request.resource.data.inquiryId == resource.data.inquiryId
+            && request.resource.data.status == resource.data.status);
       allow delete: if isAdmin()
         || (isSignedIn() && resource.data.studentId == request.auth.uid);
     }

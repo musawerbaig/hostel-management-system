@@ -39,7 +39,7 @@ export function MyInquiriesView({ inquiries, onBrowse }: Props) {
                       </span>
                     </div>
                     <p className="text-sm text-gray-600 italic">"{inq.message}"</p>
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.moveIn ? ` • Moving in: ${inq.moveIn}` : ''}</p>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{new Date(inq.createdAt).toLocaleDateString()}{inq.moveInDate ? ` • Moving in: ${inq.moveInDate}` : ''} • {inq.bedsNeeded} bed(s)</p>
                   </div>
                 ))}
               </div>
