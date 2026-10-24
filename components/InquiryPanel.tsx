@@ -38,6 +38,9 @@ export function InquiryPanel({ hostel, user, sent, busy, message, onMessageChang
                                <CheckCircle className="w-8 h-8 text-green-500 mx-auto" />
                                <p className="font-black text-green-800">Inquiry sent!</p>
                                <p className="text-xs font-bold text-green-600 leading-relaxed">The owner has your message and can contact you. Track replies under My Inquiries.</p>
+                               {hostel.whatsappNumber && (
+                                 <p className="text-xs font-bold text-green-700 leading-relaxed pt-1">Owner's WhatsApp: <a className="underline" href={`https://wa.me/${hostel.whatsappNumber}`} target="_blank" rel="noreferrer">+{hostel.whatsappNumber}</a> — mention your Hostela inquiry. The owner confirms availability directly; never pay in advance.</p>
+                               )}
                              </div>
                            ) : user ? (
                              <form className="space-y-3" onSubmit={onSubmitInquiry}>
@@ -73,13 +76,6 @@ export function InquiryPanel({ hostel, user, sent, busy, message, onMessageChang
                                <p className="text-sm font-bold text-gray-500">Sign in to send an inquiry directly to the owner.</p>
                                <Button fullWidth size="lg" className="rounded-2xl py-5" onClick={onSignIn}>Sign In to Inquire</Button>
                              </div>
-                           )}
-                           {hostel.whatsappNumber && user?.id !== hostel.ownerId && (
-                             <a href={`https://wa.me/${hostel.whatsappNumber}`} target="_blank" rel="noreferrer" className="block">
-                               <Button fullWidth variant="outline" size="lg" className="rounded-2xl py-4 flex gap-2">
-                                 <MessageCircle className="w-5 h-5" /> WhatsApp the owner
-                               </Button>
-                             </a>
                            )}
                            <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-2xl">
                              <ShieldCheck className="w-6 h-6 text-blue-600 flex-shrink-0" />
