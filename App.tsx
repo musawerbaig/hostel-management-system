@@ -355,8 +355,12 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       alert("Failed to update status. Check your Firebase Rules.");
     }
   };
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const handleDeleteHostel = async (id: string) => {
-    if (!window.confirm("Are you sure you want to permanently delete this listing? This cannot be undone.")) return;
+    // First click arms the confirmation on the button itself; the second
+    // click actually deletes. No native dialog involved.
+    if (pendingDeleteId !== id) { setPendingDeleteId(id); return; }
+    setPendingDeleteId(null);
     try {
       await deleteDoc(doc(db, "hostels", id));
       setHostels(prev => prev.filter(h => h.id !== id));
@@ -930,7 +934,14 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                                          <Button size="sm" variant="danger" onClick={() => handleHostelStatusChange(h.id, 'rejected')}>{t.reject}</Button>
                                       </>
                                    )}
-                                   <Button size="sm" variant="danger" onClick={() => handleDeleteHostel(h.id)} className="rounded-xl px-4"><Trash2 className="w-4 h-4 mr-1" /> Delete</Button>
+                                   {pendingDeleteId === h.id ? (
+                                     <>
+                                       <Button size="sm" variant="danger" onClick={() => handleDeleteHostel(h.id)} className="rounded-xl px-4">Confirm delete?</Button>
+                                       <Button size="sm" variant="outline" onClick={() => setPendingDeleteId(null)} className="rounded-xl px-4">Cancel</Button>
+                                     </>
+                                   ) : (
+                                     <Button size="sm" variant="danger" onClick={() => handleDeleteHostel(h.id)} className="rounded-xl px-4"><Trash2 className="w-4 h-4 mr-1" /> Delete</Button>
+                                   )}
                                  </>
                                )}
                                <Button size="sm" variant="outline" onClick={() => handleEditHostel(h)} className="rounded-xl px-4"><Settings className="w-4 h-4 mr-1" /> Edit</Button>
