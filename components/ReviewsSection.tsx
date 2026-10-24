@@ -29,7 +29,7 @@ export function ReviewsSection({ hostel, reviews, t, user, stayedInquiry, myRevi
                            <span className="text-xs font-bold text-gray-400 italic">{t.adminNote}</span>
                         </div>
                         <div className="space-y-6">
-                           {reviews.filter(r => r.hostelId === hostel.id).map(r => (
+                           {reviews.filter(r => r.hostelId === hostel.id && r.status === 'visible').map(r => (
                              <div key={r.id} className="p-6 bg-gray-50 rounded-2xl relative overflow-hidden group">
                                 <div className="flex justify-between items-center mb-3">
                                    <div className="flex gap-0.5">
@@ -37,12 +37,12 @@ export function ReviewsSection({ hostel, reviews, t, user, stayedInquiry, myRevi
                                         <Star key={i} className={`w-3 h-3 ${i < r.rating ? 'text-yellow-400 fill-current' : 'text-gray-200'}`} />
                                       ))}
                                    </div>
-                                   <span className="text-[10px] font-bold text-gray-400">{r.date}</span>
+                                   <span className="text-[10px] font-bold text-gray-400">{new Date(r.createdAt).toLocaleDateString()}</span>
                                 </div>
                                 <p className="text-gray-700 italic mb-4 leading-relaxed">"{r.comment}"</p>
                                 <div className="flex items-center gap-2">
                                   <CheckCircle className="w-3 h-3 text-blue-500" />
-                                  <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">{r.studentName || 'Anonymous Resident'}</span>
+                                  <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">{r.studentName || 'Verified Resident'}</span>
                                 </div>
                              </div>
                            ))}
@@ -71,7 +71,7 @@ export function ReviewsSection({ hostel, reviews, t, user, stayedInquiry, myRevi
                             />
                             <Button fullWidth size="lg" className="rounded-2xl">Submit Review</Button>
                           </form>
-                        ) : user?.role === 'Student' ? (
+                        ) : user?.role === 'student' ? (
                           <div className="mt-10 p-8 border-2 border-dashed border-blue-200 bg-blue-50/50 rounded-[2rem] text-center">
                             <p className="text-sm font-black text-blue-900 mb-2">Reviews unlock after your stay</p>
                             <p className="text-xs font-medium text-blue-700 leading-relaxed">Send an inquiry from this page — once the owner confirms you stayed here, you can post a verified review. That's how Hostela keeps reviews honest.</p>

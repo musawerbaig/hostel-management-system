@@ -5,6 +5,6 @@ import { User } from './types';
 // "admin WhatsApp" number were removed — production surfaces must never
 // present fabricated listings, reviews or contact numbers as real.
 // Admins are real Firebase Auth accounts whose Firestore profile in
-// users/{uid} has role: 'Admin' (see README "Making the first admin").
+// users/{uid} has role: 'admin' (see README "Making the first admin").
 
-export const isAdminUser = (user: User | null) => user?.role === 'Admin';
+export const isAdminUser = (user: User | null) => user?.role === 'admin';
