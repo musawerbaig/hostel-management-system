@@ -5,7 +5,7 @@ import { translations } from './translations';
 import { Language, User, Hostel, Review, Gender, RoomType, Amenity, Inquiry, InquiryStatus, View, COMSATS, distanceKm } from './types';
 
 import { signUpWithEmail, signInWithEmail, signOutUser, sendPasswordReset, watchAuth, fetchProfile } from './auth';
-import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, docToModel } from './services';
+import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, fetchVerificationDocs, docToModel } from './services';
 import { uploadHostelPhotos, uploadVerificationDocs } from './uploads';
 import { Button } from './components/Button';
 import { Navbar } from './components/Navbar';
@@ -311,6 +311,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     const orig = hostels.find(h => h.id === editHostelData.id);
     const identityChanged = !!orig && (orig.name !== editHostelData.name
       || orig.area !== editHostelData.area || orig.address !== editHostelData.address);
+    const needsReview = user.role === 'owner' && (!!identityChanged || orig?.status === 'rejected');
     const payload = {
       name: editHostelData.name,
       area: editHostelData.area,
@@ -326,14 +327,14 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       availableFrom: editHostelData.availableFrom,
       rules: editHostelData.rules,
       photos: editHostelData.photos,
-      ...(user.role === 'owner' && identityChanged ? { status: 'pending' as const } : {}),
+      ...(needsReview ? { status: 'pending' as const } : {}),
       updatedAt: serverTimestamp(),
     };
     try {
       await updateDoc(doc(db, "hostels", editHostelData.id), payload);
-      setHostels(prev => prev.map(h => h.id === editHostelData.id ? { ...h, ...editHostelData, ...(user.role === 'owner' && identityChanged ? { status: 'pending' as const } : {}) } : h));
-      alert(identityChanged && user.role === 'owner'
-        ? "Saved — because the name, area or address changed, the listing is back in the verification queue."
+      setHostels(prev => prev.map(h => h.id === editHostelData.id ? { ...h, ...editHostelData, ...(needsReview ? { status: 'pending' as const } : {}) } : h));
+      alert(needsReview
+        ? "Saved — the listing is back in the verification queue."
         : "Listing updated successfully!");
       setView(user.role === 'admin' ? 'admin-dashboard' : 'owner-dashboard');
     } catch (error) {
@@ -345,21 +346,35 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
 
 
-  const handleHostelStatusChange = async (id: string, newStatus: 'live' | 'rejected') => {
+  const handleHostelStatusChange = async (id: string, newStatus: 'live' | 'rejected' | 'suspended') => {
     try {
       const hostelRef = doc(db, "hostels", id);
       const patch = newStatus === 'live'
         ? { status: 'live' as const, verifiedAt: serverTimestamp(), verifiedBy: user?.id ?? '', updatedAt: serverTimestamp() }
+        : newStatus === 'suspended'
+        ? { status: 'suspended' as const, updatedAt: serverTimestamp() }
         : { status: 'rejected' as const, updatedAt: serverTimestamp() };
       await updateDoc(hostelRef, patch);
       setHostels(prev => prev.map(h => h.id === id ? { ...h, status: newStatus, verifiedAt: new Date().toISOString(), verifiedBy: user?.id ?? h.verifiedBy } : h));
-      alert(`Hostel has been ${newStatus === 'live' ? 'approved and published' : 'rejected'}!`);
+      alert(`Hostel has been ${newStatus === 'live' ? 'approved and published' : newStatus === 'suspended' ? 'suspended' : 'rejected'}!`);
     } catch (error) {
       console.error("Admin Error:", error);
       alert("Failed to update status. Check your Firebase Rules.");
     }
   };
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  // R4 verification panel state
+  const [verifyHostel, setVerifyHostel] = useState<Hostel | null>(null);
+  const [verifyDocs, setVerifyDocs] = useState<string[]>([]);
+  const [verifyOwnerPhone, setVerifyOwnerPhone] = useState('');
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  const [usersCount, setUsersCount] = useState(0);
+  // R4: admin account count for the dashboard stats row.
+  useEffect(() => {
+    if (user?.role !== 'admin') return;
+    getDocs(collection(db, "users")).then(s => setUsersCount(s.size)).catch(() => {});
+  }, [user]);
   const handleDeleteHostel = async (id: string) => {
     // First click arms the confirmation on the button itself; the second
     // click actually deletes. No native dialog involved.
@@ -509,6 +524,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
         nearbyUniversities: nearby,
         status: 'pending',
         rejectionReason: '',
+        ownerReachable: false,
         verifiedAt: '',
         verifiedBy: '',
         ownerId: user.id,
@@ -537,6 +553,61 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       alert("Error saving! Check your internet or Firebase Rules.");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // R4 verification panel (PRD §5): the checklist is the gate. Approve is
+  // enabled only when every row passes; the admin's judgment on document
+  // adequacy is exercised by reviewing the linked documents before approving.
+  const openVerifyPanel = async (hostel: Hostel) => {
+    setVerifyHostel(hostel);
+    setVerifyDocs([]);
+    setVerifyOwnerPhone('');
+    setRejectReason('');
+    setVerifyLoading(true);
+    try {
+      const [urls, owner] = await Promise.all([
+        fetchVerificationDocs(hostel.id),
+        fetchProfile(hostel.ownerId),
+      ]);
+      setVerifyDocs(urls);
+      setVerifyOwnerPhone(owner?.phone ?? '');
+    } catch { /* panel still renders with computed rows */ }
+    finally { setVerifyLoading(false); }
+  };
+  const handleMarkReachable = async () => {
+    if (!verifyHostel) return;
+    try {
+      await updateDoc(doc(db, "hostels", verifyHostel.id), { ownerReachable: true, updatedAt: serverTimestamp() });
+      setHostels(prev => prev.map(h => h.id === verifyHostel.id ? { ...h, ownerReachable: true } : h));
+      setVerifyHostel({ ...verifyHostel, ownerReachable: true });
+    } catch (error) {
+      console.error("Reachable error:", error);
+      alert("Could not save the reachable-owner check.");
+    }
+  };
+  const handleRejectWithReason = async () => {
+    if (!verifyHostel || !rejectReason.trim()) {
+      alert("Please write a rejection reason — the owner will see it.");
+      return;
+    }
+    try {
+      await updateDoc(doc(db, "hostels", verifyHostel.id), { status: 'rejected', rejectionReason: rejectReason.trim(), updatedAt: serverTimestamp() });
+      setHostels(prev => prev.map(h => h.id === verifyHostel.id ? { ...h, status: 'rejected', rejectionReason: rejectReason.trim() } : h));
+      setVerifyHostel(null);
+      setRejectReason('');
+    } catch (error) {
+      console.error("Reject error:", error);
+      alert("Could not reject the listing.");
+    }
+  };
+  const handleResubmit = async (id: string) => {
+    try {
+      await updateDoc(doc(db, "hostels", id), { status: 'pending', updatedAt: serverTimestamp() });
+      setHostels(prev => prev.map(h => h.id === id ? { ...h, status: 'pending' } : h));
+    } catch (error) {
+      console.error("Resubmit error:", error);
+      alert("Could not resubmit the listing.");
     }
   };
 
@@ -866,6 +937,18 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                  </div>
               </div>
 
+              {/* R4: dashboard counts */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-12">
+                 <div className="p-5 bg-white rounded-2xl border border-gray-100"><p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Live listings</p><p className="text-3xl font-black text-green-600">{displayedHostels.filter(h => h.status === 'live').length}</p></div>
+                 <div className="p-5 bg-white rounded-2xl border border-gray-100"><p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Pending review</p><p className="text-3xl font-black text-yellow-600">{displayedHostels.filter(h => h.status === 'pending').length}</p></div>
+                 <div className="p-5 bg-white rounded-2xl border border-gray-100"><p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Paused / Suspended</p><p className="text-3xl font-black text-gray-900">{displayedHostels.filter(h => h.status === 'paused' || h.status === 'suspended').length}</p></div>
+                 {user?.role === 'admin' ? (
+                   <div className="p-5 bg-white rounded-2xl border border-gray-100"><p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Accounts / New inquiries</p><p className="text-3xl font-black text-blue-600">{usersCount} / {inquiries.filter(i => i.status === 'new').length}</p></div>
+                 ) : (
+                   <div className="p-5 bg-white rounded-2xl border border-gray-100"><p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">New inquiries</p><p className="text-3xl font-black text-blue-600">{inquiries.filter(i => i.status === 'new').length}</p></div>
+                 )}
+              </div>
+
               <div className="grid grid-cols-1 gap-8">
                 {user?.role === 'owner' && user?.status === 'suspended' && (
                   <div className="p-5 bg-yellow-50 border-2 border-yellow-100 rounded-2xl flex items-center gap-3">
@@ -873,7 +956,74 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     <p className="text-sm font-bold text-yellow-800">Your account is suspended. Your listings are hidden from public search until an admin reinstates your account.</p>
                   </div>
                 )}
-                {/* --- START OF VERIFICATION DASHBOARD MODIFICATION --- */}
+                {/* R4: verification checklist panel (PRD §5) */}
+              {user?.role === 'admin' && verifyHostel && (() => {
+                const h = verifyHostel;
+                const fieldsOk = h.name.trim().length > 2 && !!h.area.trim() && !!h.address.trim() && h.pricePerBedMonthly > 0 && h.totalBeds >= 1 && h.bedsAvailable >= 0 && h.bedsAvailable <= h.totalBeds && !!h.availableFrom;
+                const photosOk = h.photos.length >= 3;
+                const docsOk = h.hasVerificationDocs;
+                const reachableOk = h.ownerReachable;
+                const missing = [
+                  ...(!fieldsOk ? ['Required fields complete'] : []),
+                  ...(!photosOk ? [`At least 3 photos (has ${h.photos.length})`] : []),
+                  ...(!docsOk ? ['Verification documents on file'] : []),
+                  ...(!reachableOk ? ['Owner reachable test'] : []),
+                ];
+                const allOk = missing.length === 0;
+                const row = (ok: boolean, label: string, detail: string) => (
+                  <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-2xl">
+                    <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 ${ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>{ok ? '✓' : '✗'}</span>
+                    <div><p className="text-sm font-black text-gray-900">{label}</p><p className="text-xs font-medium text-gray-500">{detail}</p></div>
+                  </div>
+                );
+                return (
+                  <div className="mb-12 bg-white p-8 rounded-[2.5rem] border-2 border-blue-100 shadow-xl space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-xl font-black text-gray-900">Verification checklist — {h.name}</h3>
+                        <p className="text-sm text-gray-500 font-medium">{h.area} • {h.gender === 'boys' ? 'Boys' : 'Girls'} • Approve is enabled only when every row passes.</p>
+                      </div>
+                      <button className="p-3 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors" onClick={() => setVerifyHostel(null)}><X className="w-5 h-5" /></button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {row(fieldsOk, 'Required fields complete', 'Name, area, address, price above 0, beds, available-from date.')}
+                      {row(photosOk, 'At least 3 photos', `${h.photos.length} photo(s) on the listing.`)}
+                      {row(docsOk, 'Verification documents on file', docsOk ? 'Owner uploaded documents — review them below before approving.' : 'No documents uploaded yet. Ask the owner to upload CNIC + right-to-list proof.')}
+                      {row(reachableOk, 'Owner reachable test', verifyOwnerPhone ? `Owner phone on file: ${verifyOwnerPhone}. Call or message to confirm they are reachable, then mark it.` : 'No phone on the owner profile — the owner must add one.')}
+                    </div>
+                    {verifyLoading ? (
+                      <p className="text-xs font-bold text-gray-400">Loading documents…</p>
+                    ) : verifyDocs.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Verification documents (admin-only links)</p>
+                        <div className="flex flex-wrap gap-2">
+                          {verifyDocs.map((u, i) => (
+                            <a key={i} href={u} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-blue-50 text-blue-700 text-xs font-black rounded-xl hover:bg-blue-100">Document {i + 1}</a>
+                          ))}
+                        </div>
+                        <p className="text-xs font-medium text-gray-500">Approve only if the CNIC and right-to-list proof look satisfactory. These links are never shown on the public listing.</p>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-3">
+                      {!reachableOk && (
+                        <Button variant="outline" className="rounded-xl" onClick={handleMarkReachable}>Mark owner reachable</Button>
+                      )}
+                      <Button variant="secondary" className="rounded-xl" disabled={!allOk} onClick={() => { handleHostelStatusChange(h.id, 'live'); setVerifyHostel(null); }}>Approve &amp; publish</Button>
+                    </div>
+                    {!allOk && (
+                      <p className="text-xs font-bold text-red-600">Approval blocked — missing: {missing.join(', ')}.</p>
+                    )}
+                    <div className="pt-6 border-t border-gray-100 space-y-3">
+                      <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Rejection reason (shown to the owner)</label>
+                      <textarea rows={2} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. Photos do not match the address, or no CNIC uploaded."
+                        value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+                      <Button variant="danger" className="rounded-xl" onClick={handleRejectWithReason}>Reject with reason</Button>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* --- START OF VERIFICATION DASHBOARD MODIFICATION --- */}
 {user?.role === 'admin' && hostels.filter(h => h.status === 'pending').length > 0 && (
   <div className="mb-12 bg-white p-8 rounded-[2.5rem] border-2 border-yellow-100 shadow-xl shadow-yellow-50">
     <div className="flex items-center gap-3 mb-8">
@@ -890,28 +1040,20 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       {hostels.filter(h => h.status === 'pending').map(h => (
         <div key={h.id} className="p-5 bg-gray-50 rounded-2xl flex flex-col md:flex-row justify-between items-center gap-4 border border-gray-100">
           <div className="flex items-center gap-4">
-            <img src={h.photos[0]} className="w-16 h-16 rounded-xl object-cover" alt="" />
+            <img src={h.photos[0] || 'https://picsum.photos/seed/hostela/800/600'} className="w-16 h-16 rounded-xl object-cover" alt="" />
             <div>
               <p className="font-bold text-gray-900">{h.name}</p>
               <p className="text-xs text-gray-400 uppercase font-black tracking-widest">{h.area} • {h.gender === 'boys' ? 'Boys' : 'Girls'}</p>
             </div>
           </div>
           <div className="flex gap-2 w-full md:w-auto">
-            <Button 
-              fullWidth 
-              variant="secondary" 
-              className="rounded-xl" 
-              onClick={() => handleHostelStatusChange(h.id, 'live')}
+            <Button
+              fullWidth
+              variant="secondary"
+              className="rounded-xl"
+              onClick={() => openVerifyPanel(h)}
             >
-              Approve
-            </Button>
-            <Button 
-              fullWidth 
-              variant="danger" 
-              className="rounded-xl" 
-              onClick={() => handleHostelStatusChange(h.id, 'rejected')}
-            >
-              Reject
+              Review &amp; verify
             </Button>
           </div>
         </div>
@@ -941,15 +1083,21 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest flex items-center gap-1">
                                  <MapPin className="w-3 h-3" /> {h.area} • {h.gender === 'boys' ? 'Boys' : 'Girls'}
                                </p>
+                               {h.status === 'rejected' && h.rejectionReason && (
+                                 <p className="text-xs font-bold text-red-600">Rejected: {h.rejectionReason}</p>
+                               )}
                             </div>
                             <div className="flex gap-2">
                                {user?.role === 'admin' && (
                                  <>
                                    {h.status === 'pending' && (
-                                      <>
-                                         <Button size="sm" variant="secondary" onClick={() => handleHostelStatusChange(h.id, 'live')}>{t.approve}</Button>
-                                         <Button size="sm" variant="danger" onClick={() => handleHostelStatusChange(h.id, 'rejected')}>{t.reject}</Button>
-                                      </>
+                                      <Button size="sm" variant="secondary" onClick={() => openVerifyPanel(h)} className="rounded-xl px-4">Verify</Button>
+                                   )}
+                                   {h.status === 'live' && (
+                                      <Button size="sm" variant="outline" onClick={() => handleHostelStatusChange(h.id, 'suspended')} className="rounded-xl px-4">Suspend</Button>
+                                   )}
+                                   {h.status === 'suspended' && (
+                                      <Button size="sm" variant="secondary" onClick={() => handleHostelStatusChange(h.id, 'live')} className="rounded-xl px-4">Reinstate</Button>
                                    )}
                                    {pendingDeleteId === h.id ? (
                                      <>
@@ -962,6 +1110,9 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                                  </>
                                )}
                                <Button size="sm" variant="outline" onClick={() => handleEditHostel(h)} className="rounded-xl px-4"><Settings className="w-4 h-4 mr-1" /> Edit</Button>
+                               {user?.role === 'owner' && h.status === 'rejected' && (
+                                 <Button size="sm" variant="secondary" onClick={() => handleResubmit(h.id)} className="rounded-xl px-4">Resubmit</Button>
+                               )}
                                {h.status === 'live' && (
                                  <Button size="sm" variant="outline" onClick={() => handleListingStatusChange(h.id, 'paused')} className="rounded-xl px-4">Pause</Button>
                                )}

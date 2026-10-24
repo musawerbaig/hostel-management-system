@@ -66,6 +66,7 @@ export interface Hostel {
   nearbyUniversities: string[];
   status: HostelStatus;
   rejectionReason: string; // set on reject, shown to the owner
+  ownerReachable: boolean; // admin-confirmed reachable-owner test (PRD §5)
   verifiedAt: string; // '' until first approval
   verifiedBy: string; // uid of the approving admin
   createdAt: string;
