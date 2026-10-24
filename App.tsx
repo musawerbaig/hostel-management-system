@@ -2,7 +2,7 @@ import { db } from './firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, serverTimestamp } from 'firebase/firestore';
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { translations } from './translations';
-import { Language, User, Hostel, Review, Gender, Inquiry, InquiryStatus, View, COMSATS, distanceKm } from './types';
+import { Language, User, Hostel, Review, Gender, RoomType, Amenity, Inquiry, InquiryStatus, View, COMSATS, distanceKm } from './types';
 
 import { signUpWithEmail, signInWithEmail, signOutUser, sendPasswordReset, watchAuth, fetchProfile } from './auth';
 import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, docToModel } from './services';
@@ -47,8 +47,24 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  const [newName, setNewName] = useState('');
-const [newArea, setNewArea] = useState('');
+  // R3a: one draft object for the full listing form (PRD §8 fields).
+  const DEFAULT_DRAFT = {
+    name: '', area: '', description: '', address: '',
+    latitude: COMSATS.latitude, longitude: COMSATS.longitude,
+    gender: 'boys' as Gender, roomTypes: [] as RoomType[],
+    pricePerBedMonthly: 0, messAvailable: false, messPriceMonthly: 0,
+    securityDeposit: 0, otherChargesNote: '', totalBeds: 1, bedsAvailable: 1,
+    availableFrom: new Date().toISOString().split('T')[0],
+    amenities: [] as Amenity[], rules: '', nearbyExtra: '',
+  };
+  const [draft, setDraft] = useState(DEFAULT_DRAFT);
+  const setDraftField = <K extends keyof typeof DEFAULT_DRAFT>(key: K, value: (typeof DEFAULT_DRAFT)[K]) =>
+    setDraft(d => ({ ...d, [key]: value }));
+  const toggleDraftList = (key: 'roomTypes' | 'amenities', value: string) =>
+    setDraft(d => {
+      const list = d[key] as string[];
+      return { ...d, [key]: list.includes(value) ? list.filter(x => x !== value) : [...list, value] };
+    });
 const [isSubmitting, setIsSubmitting] = useState(false);
   const [lang, setLang] = useState<Language>('en');
   const [user, setUser] = useState<User | null>(null);
@@ -434,8 +450,17 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       setView('signup');
       return;
     }
-    if (!newName.trim() || !newArea.trim()) {
-      alert("Please enter the hostel name and area first!");
+    const errors: string[] = [];
+    if (draft.name.trim().length <= 2) errors.push('Hostel name (at least 3 characters)');
+    if (!draft.area.trim()) errors.push('Area');
+    if (!draft.address.trim()) errors.push('Full address');
+    if (draft.pricePerBedMonthly <= 0) errors.push('Price per bed (must be above 0)');
+    if (draft.totalBeds < 1) errors.push('Total beds (at least 1)');
+    if (draft.bedsAvailable < 0 || draft.bedsAvailable > draft.totalBeds) errors.push('Beds available (between 0 and total beds)');
+    if (!draft.availableFrom) errors.push('Available-from date');
+    if (draft.roomTypes.length === 0) errors.push('At least one room type');
+    if (errors.length > 0) {
+      alert('Please complete: ' + errors.join(', ') + '.');
       return;
     }
     setIsSubmitting(true);
@@ -446,35 +471,33 @@ const [isSubmitting, setIsSubmitting] = useState(false);
           photoUrls = await uploadHostelPhotos(user.id, tempImageFiles);
         } catch (err) {
           console.error("Storage upload failed:", err);
-          const proceed = window.confirm("Photo storage isn't activated for this project yet, so photos can't be uploaded right now. Submit the listing without photos?");
+          const proceed = window.confirm("Photo storage isn't activated for this project yet, so photos can't be uploaded right now. Submit the listing without photos? The admin will ask for photos before approval.");
           if (!proceed) { setIsSubmitting(false); return; }
         }
       }
-      // R2: minimal PRD §8 document. The full listing form (R3) collects
-      // every field; until then the listing enters the queue with the
-      // required fields present and honest zero/empty values.
+      const nearby = [COMSATS.name, ...draft.nearbyExtra.split(',').map(s => s.trim()).filter(Boolean)];
       await addDoc(collection(db, "hostels"), {
-        name: newName.trim(),
-        area: newArea.trim(),
-        description: '',
-        address: '',
-        latitude: COMSATS.latitude,
-        longitude: COMSATS.longitude,
-        gender: 'boys',
-        roomTypes: [],
-        pricePerBedMonthly: 0,
-        messAvailable: false,
-        messPriceMonthly: 0,
-        securityDeposit: 0,
-        otherChargesNote: '',
-        totalBeds: 0,
-        bedsAvailable: 0,
-        availableFrom: new Date().toISOString().split('T')[0],
-        amenities: [],
-        rules: '',
+        name: draft.name.trim(),
+        area: draft.area.trim(),
+        description: draft.description.trim(),
+        address: draft.address.trim(),
+        latitude: draft.latitude,
+        longitude: draft.longitude,
+        gender: draft.gender,
+        roomTypes: draft.roomTypes,
+        pricePerBedMonthly: draft.pricePerBedMonthly,
+        messAvailable: draft.messAvailable,
+        messPriceMonthly: draft.messAvailable ? draft.messPriceMonthly : 0,
+        securityDeposit: draft.securityDeposit,
+        otherChargesNote: draft.otherChargesNote.trim(),
+        totalBeds: draft.totalBeds,
+        bedsAvailable: draft.bedsAvailable,
+        availableFrom: draft.availableFrom,
+        amenities: draft.amenities,
+        rules: draft.rules.trim(),
         photos: photoUrls,
         verificationDocs: [],
-        nearbyUniversities: [COMSATS.name],
+        nearbyUniversities: nearby,
         status: 'pending',
         rejectionReason: '',
         verifiedAt: '',
@@ -483,9 +506,8 @@ const [isSubmitting, setIsSubmitting] = useState(false);
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      alert("Listing submitted for admin moderation. We'll verify it soon.");
-      setNewName('');
-      setNewArea('');
+      alert("Listing submitted for admin verification. We'll verify it soon.");
+      setDraft(DEFAULT_DRAFT);
       setTempUploadedImages([]);
       setTempImageFiles([]);
       setView(user.role === 'admin' ? 'admin-dashboard' : 'owner-dashboard');
@@ -494,6 +516,19 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       alert("Error saving! Check your internet or Firebase Rules.");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Owner loop (PRD §7.3): pause a live listing, or send a paused listing
+  // back for re-review. Owners may never approve their own listing — the
+  // rules enforce that; this handler only offers the two owner-safe moves.
+  const handleListingStatusChange = async (id: string, newStatus: 'paused' | 'pending') => {
+    try {
+      await updateDoc(doc(db, "hostels", id), { status: newStatus, updatedAt: serverTimestamp() });
+      setHostels(prev => prev.map(h => h.id === id ? { ...h, status: newStatus } : h));
+    } catch (error) {
+      console.error("Status error:", error);
+      alert("Could not change the listing status.");
     }
   };
 
@@ -869,7 +904,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
                    <div key={h.id} className="bg-white p-6 md:p-8 rounded-[2.5rem] border border-gray-100 shadow-sm flex flex-col md:flex-row gap-8 items-start group">
                       <div className="w-full md:w-64 aspect-square overflow-hidden rounded-[2rem] border shadow-inner">
-                        <img src={h.photos[0]} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt="" />
+                        <img src={h.photos[0] || 'https://picsum.photos/seed/hostela/800/600'} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt="" />
                       </div>
                       <div className="flex-grow space-y-6 w-full">
                          <div className="flex justify-between items-start">
@@ -899,6 +934,12 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                                  </>
                                )}
                                <Button size="sm" variant="outline" onClick={() => handleEditHostel(h)} className="rounded-xl px-4"><Settings className="w-4 h-4 mr-1" /> Edit</Button>
+                               {h.status === 'live' && (
+                                 <Button size="sm" variant="outline" onClick={() => handleListingStatusChange(h.id, 'paused')} className="rounded-xl px-4">Pause</Button>
+                               )}
+                               {h.status === 'paused' && (
+                                 <Button size="sm" variant="secondary" onClick={() => handleListingStatusChange(h.id, 'pending')} className="rounded-xl px-4">Request re-review</Button>
+                               )}
                             </div>
                          </div>
                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1019,37 +1060,124 @@ const [isSubmitting, setIsSubmitting] = useState(false);
         )}
 
         {view === 'add-hostel' && (
-           <div className="max-w-3xl mx-auto py-12 px-4 animate-in zoom-in-95 duration-500">
+           <div className="max-w-4xl mx-auto py-12 px-4 animate-in slide-in-from-right duration-500">
               <div className="bg-white p-8 md:p-12 rounded-[3rem] border border-gray-100 shadow-2xl space-y-10">
-                 <div className="text-center space-y-2">
+                 <div className="text-center space-y-3">
                     <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mx-auto">
                        <Plus className="w-10 h-10 text-blue-600" />
                     </div>
                     <h2 className="text-3xl font-black text-gray-900">List New Property</h2>
-                    <p className="text-gray-500 font-medium">Follow Hostela's standards to get verified quickly.</p>
+                    <p className="text-gray-500 font-medium">Fill in every field — students compare listings on exactly these details.</p>
                  </div>
 
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                    <div className="space-y-2">
-  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Hostel Name</label>
-  <input 
-    type="text" 
-    placeholder="e.g. Blue Sky Residence" 
-    className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-    value={newName}
-    onChange={(e) => setNewName(e.target.value)} 
-  />
-</div>
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Hostel Name *</label>
+                     <input type="text" placeholder="e.g. Blue Sky Residence" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.name} onChange={(e) => setDraftField('name', e.target.value)} />
+                   </div>
                    <div className="space-y-2">
-  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Area</label>
-  <input 
-    type="text" 
-    placeholder="e.g. Chak Shahzad" 
-    className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
-    value={newArea}
-    onChange={(e) => setNewArea(e.target.value)} 
-  />
-</div>
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Area *</label>
+                     <input type="text" placeholder="e.g. Chak Shahzad" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.area} onChange={(e) => setDraftField('area', e.target.value)} />
+                   </div>
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Full Address *</label>
+                     <input type="text" placeholder="Street, sector, nearby landmark" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.address} onChange={(e) => setDraftField('address', e.target.value)} />
+                   </div>
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Description</label>
+                     <textarea rows={3} placeholder="What makes this hostel good for students?" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.description} onChange={(e) => setDraftField('description', e.target.value)} />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">For *</label>
+                     <select className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.gender} onChange={(e) => setDraftField('gender', e.target.value as Gender)}>
+                       <option value="boys">Boys</option>
+                       <option value="girls">Girls</option>
+                     </select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Room types * (pick at least one)</label>
+                     <div className="flex flex-wrap gap-2 pt-2">
+                       {(['single', 'shared-2', 'shared-3', 'dorm'] as RoomType[]).map(rt => (
+                         <button key={rt} type="button" onClick={() => toggleDraftList('roomTypes', rt)}
+                           className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${draft.roomTypes.includes(rt) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'}`}>{rt}</button>
+                       ))}
+                     </div>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Price per bed / month (PKR) *</label>
+                     <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.pricePerBedMonthly} onChange={(e) => setDraftField('pricePerBedMonthly', Number(e.target.value))} />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Security deposit (PKR)</label>
+                     <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.securityDeposit} onChange={(e) => setDraftField('securityDeposit', Number(e.target.value))} />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Mess</label>
+                     <div className="flex items-center gap-3 pt-2">
+                       <input type="checkbox" className="w-5 h-5 accent-blue-600" checked={draft.messAvailable} onChange={(e) => setDraftField('messAvailable', e.target.checked)} />
+                       <span className="text-sm font-bold text-gray-700">Mess available</span>
+                       {draft.messAvailable && (
+                         <input type="number" min={0} aria-label="Mess price" className="flex-1 p-3 bg-gray-50 border-none rounded-xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                           value={draft.messPriceMonthly} onChange={(e) => setDraftField('messPriceMonthly', Number(e.target.value))} />
+                       )}
+                     </div>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Other charges note</label>
+                     <input type="text" placeholder="e.g. Admission charges Rs 5,000 one-time" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.otherChargesNote} onChange={(e) => setDraftField('otherChargesNote', e.target.value)} />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Total beds *</label>
+                     <input type="number" min={1} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.totalBeds} onChange={(e) => setDraftField('totalBeds', Number(e.target.value))} />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Beds available *</label>
+                     <input type="number" min={0} className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.bedsAvailable} onChange={(e) => setDraftField('bedsAvailable', Number(e.target.value))} />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Available from *</label>
+                     <input type="date" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.availableFrom} onChange={(e) => setDraftField('availableFrom', e.target.value)} />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Map pin (latitude / longitude)</label>
+                     <div className="flex gap-2">
+                       <input type="number" step="0.0001" aria-label="Latitude" className="flex-1 p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                         value={draft.latitude} onChange={(e) => setDraftField('latitude', Number(e.target.value))} />
+                       <input type="number" step="0.0001" aria-label="Longitude" className="flex-1 p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                         value={draft.longitude} onChange={(e) => setDraftField('longitude', Number(e.target.value))} />
+                     </div>
+                     <button type="button" className="text-xs font-bold text-blue-600" onClick={() => { setDraftField('latitude', COMSATS.latitude); setDraftField('longitude', COMSATS.longitude); }}>Use COMSATS campus pin</button>
+                   </div>
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Amenities</label>
+                     <div className="flex flex-wrap gap-2 pt-2">
+                       {(['wifi', 'mess', 'backup-power', 'laundry', 'attached-bath', 'security', 'parking', 'study-room'] as Amenity[]).map(a => (
+                         <button key={a} type="button" onClick={() => toggleDraftList('amenities', a)}
+                           className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${draft.amenities.includes(a) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'}`}>{a}</button>
+                       ))}
+                     </div>
+                   </div>
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">House rules</label>
+                     <textarea rows={2} placeholder="e.g. Visitors till 9 pm. Quiet hours after 11 pm." className="w-full p-4 bg-gray-50 border-none rounded-2xl font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.rules} onChange={(e) => setDraftField('rules', e.target.value)} />
+                   </div>
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Other nearby universities (comma-separated; COMSATS is always included)</label>
+                     <input type="text" placeholder="e.g. NUST, Quaid-i-Azam University" className="w-full p-4 bg-gray-50 border-none rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                       value={draft.nearbyExtra} onChange={(e) => setDraftField('nearbyExtra', e.target.value)} />
+                   </div>
                  </div>
 
                  <div className="space-y-4">
@@ -1057,7 +1185,6 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                        <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Upload Facility Photos</label>
                        <span className="text-[10px] font-bold text-blue-600">Integrates with Firebase Storage</span>
                     </div>
-                    
                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
                        {tempUploadedImages.map((img, idx) => (
                          <div key={idx} className="relative aspect-square rounded-2xl overflow-hidden border-2 border-white shadow-sm">
@@ -1067,7 +1194,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                             </button>
                          </div>
                        ))}
-                       <button 
+                       <button
                          onClick={() => fileInputRef.current?.click()}
                          className="aspect-square rounded-2xl bg-gray-50 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-all"
                        >
@@ -1077,6 +1204,9 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     </div>
                     <input type="file" multiple accept="image/*" className="hidden" ref={fileInputRef} onChange={handleImageSelect} />
                     <p className="text-[10px] text-gray-400 italic text-center">Add high-quality photos of common areas, kitchens, and exteriors.</p>
+                    <div className="p-4 bg-yellow-50 border border-yellow-100 rounded-2xl">
+                       <p className="text-xs font-bold text-yellow-800 leading-relaxed">Photo upload is waiting on the Storage setup decision. You can submit now without photos — the admin will ask for at least 3 photos before approval. Verification documents (CNIC, right-to-list proof) are collected the same way once Storage is live.</p>
+                    </div>
                  </div>
 
                  <div className="space-y-4">
