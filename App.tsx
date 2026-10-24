@@ -103,6 +103,7 @@ if (liveData.length > 0) {
     })();
   }, [user]);
   const [view, setView] = useState<View>('home');
+  const [seedMsg, setSeedMsg] = useState('');
   const [selectedHostel, setSelectedHostel] = useState<Hostel | null>(null);
   
   // Hostel Edit State
@@ -239,15 +240,15 @@ if (liveData.length > 0) {
 
   const handleSeedListings = async () => {
     if (!user || user.role !== 'Admin') return;
-    if (!window.confirm('Load the 12 Islamabad/COMSATS demo listings into Firestore? Names that already exist are skipped.')) return;
+    setSeedMsg('Adding demo listings…');
     try {
       const added = await seedIslamabadListings(user.id, hostels.map(h => h.name));
       const snap = await getDocs(collection(db, "hostels"));
       setHostels(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Hostel, 'id'>) })));
-      alert(added > 0 ? `${added} demo listings added and approved.` : 'All demo listings are already loaded.');
+      setSeedMsg(added > 0 ? `${added} demo listings added and approved.` : 'All demo listings are already loaded.');
     } catch (error) {
       console.error("Seed error:", error);
-      alert('Seeding failed — check the console and your Firestore rules.');
+      setSeedMsg('Seeding failed — please try again.');
     }
   };
 
@@ -740,6 +741,7 @@ if (liveData.length > 0) {
                    {user?.role === 'Admin' && (
                      <Button variant="outline" onClick={handleSeedListings} size="lg" className="rounded-2xl gap-2">Load Islamabad Demo Listings</Button>
                    )}
+                   {seedMsg && <p className="w-full text-xs font-semibold text-gray-500">{seedMsg}</p>}
                    <Button onClick={() => setView('add-hostel')} size="lg" className="rounded-2xl gap-2 shadow-xl shadow-blue-100"><Plus className="w-5 h-5" /> {t.addHostel}</Button>
                  </div>
               </div>
