@@ -1257,7 +1257,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                  <div className="space-y-4">
                     <div className="flex items-center justify-between">
                        <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Upload Facility Photos</label>
-                       <span className="text-[10px] font-bold text-blue-600">Integrates with Firebase Storage</span>
+                       <span className="text-[10px] font-bold text-blue-600">Uploads to Cloudinary</span>
                     </div>
                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
                        {tempUploadedImages.map((img, idx) => (
@@ -1279,7 +1279,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     <input type="file" multiple accept="image/*" className="hidden" ref={fileInputRef} onChange={handleImageSelect} />
                     <p className="text-[10px] text-gray-400 italic text-center">Add high-quality photos of common areas, kitchens, and exteriors.</p>
                     <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl">
-                       <p className="text-xs font-bold text-blue-800 leading-relaxed">Photos upload to Cloudinary (3–10 needed before approval). Verification documents below are visible only to you and the admin — never on the public listing.</p>
+                       <p className="text-xs font-bold text-blue-800 leading-relaxed">Photos upload to Cloudinary. Aim for 3–10 photos; verification documents below are visible only to you and the admin — never on the public listing.</p>
                     </div>
                     <div className="space-y-2">
                        <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Verification documents (CNIC, right-to-list proof)</label>
