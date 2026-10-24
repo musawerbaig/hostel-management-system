@@ -72,7 +72,9 @@ service cloud.firestore {
       // to someone else, or forge verification. They may keep the current
       // status or send it back to 'pending' (PRD re-verification trigger
       // for name/address changes); only admins set 'live', 'rejected',
-      // 'paused' or 'suspended'. Admins can do anything (moderation).
+      // 'paused' or 'suspended'. Owners may also pause a live listing
+      // (and send a paused one back to 'pending'); only admins set 'live',
+      // 'rejected' or 'suspended'. Admins can do anything (moderation).
       allow update: if isAdmin()
         || (isSignedIn()
             && resource.data.ownerId == request.auth.uid
@@ -80,7 +82,8 @@ service cloud.firestore {
             && request.resource.data.get('verifiedAt', '') == resource.data.get('verifiedAt', '')
             && request.resource.data.get('verifiedBy', '') == resource.data.get('verifiedBy', '')
             && (request.resource.data.status == resource.data.status
-                || request.resource.data.status == 'pending'));
+                || request.resource.data.status == 'pending'
+                || (request.resource.data.status == 'paused' && resource.data.status == 'live'));
       allow delete: if isAdmin()
         || (isSignedIn() && resource.data.ownerId == request.auth.uid);
     }
