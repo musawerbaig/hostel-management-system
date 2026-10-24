@@ -18,12 +18,13 @@ const photos = (n: number): string[] => [
 const COMSATS_PRESET = ['COMSATS University Islamabad'];
 
 function listing(
-  base: Omit<SeedInput, 'verificationDocs' | 'hasVerificationDocs' | 'nearbyUniversities' | 'rejectionReason' | 'verifiedAt' | 'verifiedBy'>,
+  base: Omit<SeedInput, 'verificationDocs' | 'hasVerificationDocs' | 'ownerReachable' | 'nearbyUniversities' | 'rejectionReason' | 'verifiedAt' | 'verifiedBy'>,
 ): SeedInput {
   return {
     ...base,
     verificationDocs: [],
     hasVerificationDocs: false,
+    ownerReachable: false,
     nearbyUniversities: COMSATS_PRESET,
     rejectionReason: '',
     verifiedAt: '',

@@ -2,6 +2,7 @@ import { db } from './firebase';
 import {
   collection,
   addDoc,
+  getDoc,
   getDocs,
   doc,
   setDoc,
@@ -122,6 +123,14 @@ export async function saveVerificationDocs(
     urls,
     updatedAt: serverTimestamp(),
   });
+}
+
+// Verification documents for one listing (owner + admin read only).
+export async function fetchVerificationDocs(listingId: string): Promise<string[]> {
+  const snap = await getDoc(doc(db, 'verificationDocs', listingId));
+  if (!snap.exists()) return [];
+  const urls = (snap.data() as DocumentData).urls;
+  return Array.isArray(urls) ? (urls as string[]) : [];
 }
 
 // Demo seed for the admin dashboard — PRD §8 shapes. Each listing is created
