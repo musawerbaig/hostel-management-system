@@ -58,8 +58,11 @@ export interface Hostel {
   availableFrom: string; // ISO date
   amenities: Amenity[];
   rules: string;
-  photos: string[]; // Storage URLs; 3–10, first is the cover
-  verificationDocs: string[]; // private Storage URLs; admin-only
+  photos: string[]; // Cloudinary URLs; 3–10, first is the cover
+  verificationDocs: string[]; // legacy field, always empty; see below
+  hasVerificationDocs: boolean; // true when the owner uploaded verification docs
+  // Verification document URLs live ONLY in the `verificationDocs`
+  // collection (owner + admin read) — never in this public document.
   nearbyUniversities: string[];
   status: HostelStatus;
   rejectionReason: string; // set on reject, shown to the owner

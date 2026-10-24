@@ -5,8 +5,8 @@ import { translations } from './translations';
 import { Language, User, Hostel, Review, Gender, RoomType, Amenity, Inquiry, InquiryStatus, View, COMSATS, distanceKm } from './types';
 
 import { signUpWithEmail, signInWithEmail, signOutUser, sendPasswordReset, watchAuth, fetchProfile } from './auth';
-import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, docToModel } from './services';
-import { uploadHostelPhotos } from './uploads';
+import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, docToModel } from './services';
+import { uploadHostelPhotos, uploadVerificationDocs } from './uploads';
 import { Button } from './components/Button';
 import { Navbar } from './components/Navbar';
 import { HostelCard } from './components/HostelCard';
@@ -174,6 +174,9 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   // Image Upload State — previews for the UI plus the real File objects
   // that Phase 2 uploads to Firebase Storage on submit.
   const [tempUploadedImages, setTempUploadedImages] = useState<string[]>([]);
+  const [tempDocFiles, setTempDocFiles] = useState<File[]>([]);
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const [editMediaBusy, setEditMediaBusy] = useState(false);
   const [tempImageFiles, setTempImageFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -322,6 +325,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       bedsAvailable: editHostelData.bedsAvailable,
       availableFrom: editHostelData.availableFrom,
       rules: editHostelData.rules,
+      photos: editHostelData.photos,
       ...(user.role === 'owner' && identityChanged ? { status: 'pending' as const } : {}),
       updatedAt: serverTimestamp(),
     };
@@ -475,12 +479,12 @@ const [isSubmitting, setIsSubmitting] = useState(false);
           photoUrls = await uploadHostelPhotos(user.id, tempImageFiles);
         } catch (err) {
           console.error("Storage upload failed:", err);
-          const proceed = window.confirm("Photo storage isn't activated for this project yet, so photos can't be uploaded right now. Submit the listing without photos? The admin will ask for photos before approval.");
+          const proceed = window.confirm("Photo upload failed. Submit the listing without photos? The admin will ask for photos before approval.");
           if (!proceed) { setIsSubmitting(false); return; }
         }
       }
       const nearby = [COMSATS.name, ...draft.nearbyExtra.split(',').map(s => s.trim()).filter(Boolean)];
-      await addDoc(collection(db, "hostels"), {
+      const listingRef = await addDoc(collection(db, "hostels"), {
         name: draft.name.trim(),
         area: draft.area.trim(),
         description: draft.description.trim(),
@@ -501,6 +505,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
         rules: draft.rules.trim(),
         photos: photoUrls,
         verificationDocs: [],
+        hasVerificationDocs: false,
         nearbyUniversities: nearby,
         status: 'pending',
         rejectionReason: '',
@@ -510,8 +515,20 @@ const [isSubmitting, setIsSubmitting] = useState(false);
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      // Verification documents (best effort — the listing is already saved).
+      if (tempDocFiles.length > 0) {
+        try {
+          const docUrls = await uploadVerificationDocs(user.id, tempDocFiles);
+          await saveVerificationDocs(listingRef.id, user.id, docUrls);
+          await updateDoc(listingRef, { hasVerificationDocs: true, updatedAt: serverTimestamp() });
+        } catch (docErr) {
+          console.error("Verification-doc upload failed:", docErr);
+          alert("Listing saved, but the verification documents could not be uploaded. You can add them later from Manage Property.");
+        }
+      }
       alert("Listing submitted for admin verification. We'll verify it soon.");
       setDraft(DEFAULT_DRAFT);
+      setTempDocFiles([]);
       setTempUploadedImages([]);
       setTempImageFiles([]);
       setView(user.role === 'admin' ? 'admin-dashboard' : 'owner-dashboard');
@@ -1064,6 +1081,52 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                             onChange={(e) => setEditHostelData({ ...editHostelData, rules: e.target.value })} />
                        </div>
                     </div>
+                    <div className="space-y-6 pt-8 border-t border-gray-100">
+                       <h3 className="text-xl font-black text-gray-900">Listing photos</h3>
+                       <div className="flex gap-3 overflow-x-auto pb-2">
+                          {editHostelData.photos.map((p, idx) => (
+                            <div key={idx} className="relative w-24 h-24 rounded-2xl overflow-hidden border-2 border-white shadow-sm flex-shrink-0">
+                               <img src={p} className="w-full h-full object-cover" alt="" />
+                               <button type="button" className="absolute top-0 right-0 p-1 bg-red-600 text-white" onClick={() => setEditHostelData({ ...editHostelData, photos: editHostelData.photos.filter((_, i) => i !== idx) })}><X className="w-3 h-3" /></button>
+                            </div>
+                          ))}
+                          <label className="w-24 h-24 rounded-2xl bg-gray-50 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 hover:text-blue-600 hover:border-blue-300 transition-colors cursor-pointer flex-shrink-0">
+                             <Camera className="w-5 h-5" />
+                             <span className="text-[8px] font-black uppercase mt-1">{editMediaBusy ? 'Uploading…' : 'Add'}</span>
+                             <input type="file" multiple accept="image/*" className="hidden" disabled={editMediaBusy} onChange={async (e) => {
+                               const files = e.target.files; if (!files || !user) return;
+                               setEditMediaBusy(true);
+                               try {
+                                 const urls = await uploadHostelPhotos(user.id, Array.from(files));
+                                 setEditHostelData(prev => prev ? { ...prev, photos: [...prev.photos, ...urls] } : prev);
+                               } catch (err) { console.error("Photo upload failed:", err); alert("Could not upload those photos. Try again."); }
+                               finally { setEditMediaBusy(false); e.target.value = ''; }
+                             }} />
+                          </label>
+                       </div>
+                       <p className="text-xs font-bold text-gray-500">Photos save with the form below. Aim for 3–10 photos before approval.</p>
+                       <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Verification documents (CNIC, right-to-list proof)</label>
+                          <div className="flex items-center gap-3">
+                             <label className="px-5 py-3 bg-gray-50 border border-gray-200 rounded-xl text-xs font-black uppercase tracking-widest cursor-pointer hover:bg-gray-100">
+                                {editMediaBusy ? 'Uploading…' : 'Upload documents'}
+                                <input type="file" multiple accept="image/*,application/pdf" className="hidden" disabled={editMediaBusy} onChange={async (e) => {
+                                  const files = e.target.files; if (!files || !user || !editHostelData) return;
+                                  setEditMediaBusy(true);
+                                  try {
+                                    const urls = await uploadVerificationDocs(user.id, Array.from(files));
+                                    await saveVerificationDocs(editHostelData.id, user.id, urls);
+                                    await updateDoc(doc(db, "hostels", editHostelData.id), { hasVerificationDocs: true, updatedAt: serverTimestamp() });
+                                    setEditHostelData(prev => prev ? { ...prev, hasVerificationDocs: true } : prev);
+                                    alert("Verification documents uploaded — visible only to you and the admin.");
+                                  } catch (err) { console.error("Doc upload failed:", err); alert("Could not upload those documents. Try again."); }
+                                  finally { setEditMediaBusy(false); e.target.value = ''; }
+                                }} />
+                             </label>
+                             <span className="text-xs font-bold text-gray-500">{editHostelData.hasVerificationDocs ? 'Documents on file' : 'None on file yet'}</span>
+                          </div>
+                       </div>
+                    </div>
                     <Button fullWidth size="lg" className="rounded-2xl py-5 shadow-xl shadow-blue-100">Save Changes</Button>
                  </form>
               </div>
@@ -1215,8 +1278,16 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     </div>
                     <input type="file" multiple accept="image/*" className="hidden" ref={fileInputRef} onChange={handleImageSelect} />
                     <p className="text-[10px] text-gray-400 italic text-center">Add high-quality photos of common areas, kitchens, and exteriors.</p>
-                    <div className="p-4 bg-yellow-50 border border-yellow-100 rounded-2xl">
-                       <p className="text-xs font-bold text-yellow-800 leading-relaxed">Photo upload is waiting on the Storage setup decision. You can submit now without photos — the admin will ask for at least 3 photos before approval. Verification documents (CNIC, right-to-list proof) are collected the same way once Storage is live.</p>
+                    <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl">
+                       <p className="text-xs font-bold text-blue-800 leading-relaxed">Photos upload to Cloudinary (3–10 needed before approval). Verification documents below are visible only to you and the admin — never on the public listing.</p>
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest px-1">Verification documents (CNIC, right-to-list proof)</label>
+                       <div className="flex items-center gap-3">
+                          <Button size="sm" variant="outline" className="rounded-xl" onClick={() => docInputRef.current?.click()}>Choose files</Button>
+                          <span className="text-xs font-bold text-gray-500">{tempDocFiles.length > 0 ? tempDocFiles.map(f => f.name).join(', ') : 'No files chosen'}</span>
+                       </div>
+                       <input type="file" multiple accept="image/*,application/pdf" className="hidden" ref={docInputRef} onChange={(e) => { const f = e.target.files; if (f) setTempDocFiles(Array.from(f)); }} />
                     </div>
                  </div>
 
