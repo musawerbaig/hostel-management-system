@@ -109,6 +109,21 @@ export async function submitReview(
   return review;
 }
 
+// Verification documents for one listing. The document id IS the listing
+// id; only the owning owner and admins may read it (firestore.rules).
+export async function saveVerificationDocs(
+  listingId: string,
+  ownerId: string,
+  urls: string[],
+): Promise<void> {
+  await setDoc(doc(db, 'verificationDocs', listingId), {
+    listingId,
+    ownerId,
+    urls,
+    updatedAt: serverTimestamp(),
+  });
+}
+
 // Demo seed for the admin dashboard — PRD §8 shapes. Each listing is created
 // as 'pending' (the only status the rules allow on create) and immediately
 // approved by the admin: status 'live' + verifiedAt/verifiedBy.

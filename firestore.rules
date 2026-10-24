@@ -88,6 +88,20 @@ service cloud.firestore {
         || (isSignedIn() && resource.data.ownerId == request.auth.uid);
     }
 
+    // ---- Verification documents (PRD §8.2, admin-only) ----
+    // URLs for CNIC / right-to-list proofs. Never embedded in the public
+    // listing document: a public read of a live listing must not leak them.
+    match /verificationDocs/{listingId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create, update: if isActive()
+        && (isAdmin()
+            || (isSignedIn()
+                && request.resource.data.ownerId == request.auth.uid
+                && get(/databases/$(database)/documents/hostels/$(listingId)).data.ownerId == request.auth.uid));
+      allow delete: if isAdmin();
+    }
+
     // ---- Student inquiries (PRD §8.3) ----
     match /inquiries/{inquiryId} {
       // Visible only to the student who sent it, the hostel's owner, admins.
