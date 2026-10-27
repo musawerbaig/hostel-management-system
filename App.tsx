@@ -8,6 +8,7 @@ import { signUpWithEmail, signInWithEmail, signOutUser, sendPasswordReset, watch
 import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, fetchVerificationDocs, createListingContact, fetchFavourites, toggleFavourite, docToModel } from './services';
 import { uploadHostelPhotos, uploadVerificationDocs } from './uploads';
 import { notifyOwnerOfInquiry } from './notifications';
+import { evaluateChecklist } from './verification';
 import { Button } from './components/Button';
 import { Navbar } from './components/Navbar';
 import { HostelCard } from './components/HostelCard';
@@ -1094,17 +1095,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                 {/* R4: verification checklist panel (PRD §5) */}
               {user?.role === 'admin' && verifyHostel && (() => {
                 const h = verifyHostel;
-                const fieldsOk = h.name.trim().length > 2 && !!h.area.trim() && !!h.address.trim() && h.pricePerBedMonthly > 0 && h.totalBeds >= 1 && h.bedsAvailable >= 0 && h.bedsAvailable <= h.totalBeds && !!h.availableFrom;
-                const photosOk = h.photos.length >= 3;
-                const docsOk = h.hasVerificationDocs;
-                const reachableOk = h.ownerReachable;
-                const missing = [
-                  ...(!fieldsOk ? ['Required fields complete'] : []),
-                  ...(!photosOk ? [`At least 3 photos (has ${h.photos.length})`] : []),
-                  ...(!docsOk ? ['Verification documents on file'] : []),
-                  ...(!reachableOk ? ['Owner reachable test'] : []),
-                ];
-                const allOk = missing.length === 0;
+                const { fieldsOk, photosOk, docsOk, reachableOk, missing, allOk } = evaluateChecklist(h);
                 const row = (ok: boolean, label: string, detail: string) => (
                   <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-2xl">
                     <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 ${ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>{ok ? '✓' : '✗'}</span>
