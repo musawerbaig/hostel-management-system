@@ -1,11 +1,11 @@
 import { db } from './firebase'; 
 import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, serverTimestamp } from 'firebase/firestore';
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, lazy, Suspense } from 'react';
 import { translations } from './translations';
 import { Language, User, Hostel, Review, Gender, RoomType, Amenity, Inquiry, InquiryStatus, View, COMSATS, distanceKm } from './types';
 
 import { signUpWithEmail, signInWithEmail, signOutUser, sendPasswordReset, watchAuth, fetchProfile } from './auth';
-import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, fetchVerificationDocs, createListingContact, docToModel } from './services';
+import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, fetchVerificationDocs, createListingContact, fetchFavourites, toggleFavourite, docToModel } from './services';
 import { uploadHostelPhotos, uploadVerificationDocs } from './uploads';
 import { notifyOwnerOfInquiry } from './notifications';
 import { Button } from './components/Button';
@@ -44,8 +44,13 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Upload,
-  LayoutDashboard
+  LayoutDashboard,
+  Heart,
+  Map as MapIcon
 } from 'lucide-react';
+
+// R6: the Leaflet map is lazy-loaded so its bundle only downloads on demand.
+const HostelMap = lazy(() => import('./HostelMap').then(m => ({ default: m.HostelMap })));
 
 export default function App() {
   // R3a: one draft object for the full listing form (PRD §8 fields).
@@ -144,6 +149,15 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   const [genderFilter, setGenderFilter] = useState<Gender | 'All'>('All');
   const [maxRentFilter, setMaxRentFilter] = useState<number>(100000);
   const [sortBy, setSortBy] = useState<'recommended' | 'rent-asc' | 'rent-desc' | 'distance' | 'beds'>('recommended');
+  // R6 filters
+  const [roomTypeFilter, setRoomTypeFilter] = useState<RoomType | 'All'>('All');
+  const [amenityFilters, setAmenityFilters] = useState<Amenity[]>([]);
+  const [bedsOnlyFilter, setBedsOnlyFilter] = useState(false);
+  const [nearComsatsFilter, setNearComsatsFilter] = useState(false);
+  const [favOnlyFilter, setFavOnlyFilter] = useState(false);
+  const [showMap, setShowMap] = useState(false);
+  // R6 favourites (listing ids saved by the signed-in user)
+  const [favourites, setFavourites] = useState<Set<string>>(new Set());
 
   // Auth form state (Phase 1: real Firebase Auth — see auth.ts)
   const [authName, setAuthName] = useState('');
@@ -158,6 +172,58 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Keep the signed-in user in sync with the real Firebase session.
   useEffect(() => watchAuth(setUser), []);
+
+  // R6: load the signed-in user's favourites; signed-out users have none.
+  useEffect(() => {
+    if (!user) { setFavourites(new Set()); return; }
+    fetchFavourites(user.id).then(ids => setFavourites(new Set(ids))).catch(() => {});
+  }, [user]);
+
+  // R6: per-listing URLs (hash routing). The detail view mirrors
+  // #/hostel/{id} so a listing can be shared and linked to directly.
+  const openHostel = (hostel: Hostel) => {
+    setSelectedHostel(hostel);
+    setView('details');
+    window.location.hash = `#/hostel/${hostel.id}`;
+    window.scrollTo(0, 0);
+  };
+  const navigateHome = () => {
+    setSelectedHostel(null);
+    setView('home');
+    window.location.hash = '';
+  };
+  // Deep link on first load + back/forward buttons.
+  useEffect(() => {
+    const fromHash = () => {
+      const m = window.location.hash.match(/^#\/hostel\/([^/]+)$/);
+      if (!m) return;
+      const found = hostels.find(h => h.id === m[1]);
+      if (found) { setSelectedHostel(found); setView('details'); }
+    };
+    fromHash();
+    window.addEventListener('hashchange', fromHash);
+    return () => window.removeEventListener('hashchange', fromHash);
+  }, [hostels]);
+
+  const handleToggleFavourite = async (hostel: Hostel) => {
+    if (!user) { setView('login'); return; }
+    const saving = !favourites.has(hostel.id);
+    setFavourites(prev => {
+      const next = new Set(prev);
+      if (saving) next.add(hostel.id); else next.delete(hostel.id);
+      return next;
+    });
+    try {
+      await toggleFavourite(user.id, hostel.id, saving);
+    } catch (err) {
+      console.error('Favourite error:', err);
+      setFavourites(prev => {
+        const next = new Set(prev);
+        if (saving) next.delete(hostel.id); else next.add(hostel.id);
+        return next;
+      });
+    }
+  };
   
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState('');
@@ -202,7 +268,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   const goAfterLogin = (profile: User) => {
     if (profile.role === 'admin') setView('admin-dashboard');
     else if (profile.role === 'owner') setView('owner-dashboard');
-    else if (selectedHostel) setView('details');
+    else if (selectedHostel) { setView('details'); window.location.hash = `#/hostel/${selectedHostel.id}`; }
     else setView('home');
   };
 
@@ -258,6 +324,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     await signOutUser();
     setUser(null);
     setView('home');
+    window.location.hash = '';
   };
 
   const filteredHostels = useMemo(() => {
@@ -267,9 +334,14 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                            h.area.toLowerCase().includes(q);
       const matchesGender = genderFilter === 'All' || h.gender === genderFilter;
       const matchesRent = h.pricePerBedMonthly <= maxRentFilter;
-      return matchesSearch && matchesGender && matchesRent && h.status === 'live';
+      const matchesRoom = roomTypeFilter === 'All' || h.roomTypes.includes(roomTypeFilter);
+      const matchesAmenities = amenityFilters.every(a => h.amenities.includes(a));
+      const matchesBeds = !bedsOnlyFilter || h.bedsAvailable > 0;
+      const matchesNear = !nearComsatsFilter || distanceKm(COMSATS.latitude, COMSATS.longitude, h.latitude, h.longitude) <= 2;
+      const matchesFav = !favOnlyFilter || favourites.has(h.id);
+      return matchesSearch && matchesGender && matchesRent && matchesRoom && matchesAmenities && matchesBeds && matchesNear && matchesFav && h.status === 'live';
     });
-  }, [hostels, searchQuery, genderFilter, maxRentFilter]);
+  }, [hostels, searchQuery, genderFilter, maxRentFilter, roomTypeFilter, amenityFilters, bedsOnlyFilter, nearComsatsFilter, favOnlyFilter, favourites]);
 
   const sortedHostels = useMemo(() => {
     const list = [...filteredHostels];
@@ -676,7 +748,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5 group-focus-within:text-blue-600 transition-colors" />
                     <input 
                       type="text" 
-                      placeholder={t.searchHostels} 
+                      placeholder={t.searchHostels} aria-label="Search hostels by name or area" 
                       className="w-full pl-12 pr-4 py-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-blue-500 text-base outline-none font-medium"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
@@ -685,7 +757,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                   <div className="grid grid-cols-2 md:flex gap-4">
                     <select 
                       className="flex-grow md:min-w-[180px] p-4 bg-gray-50 border-none rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500 cursor-pointer"
-                      value={genderFilter}
+                      value={genderFilter} aria-label="Filter by gender"
                       onChange={(e) => setGenderFilter(e.target.value as Gender | 'All')}
                     >
                       <option value="All">All Genders</option>
@@ -694,7 +766,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     </select>
                     <select
                       className="flex-grow md:min-w-[180px] p-4 bg-gray-50 border-none rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500 cursor-pointer"
-                      value={sortBy}
+                      value={sortBy} aria-label="Sort listings"
                       onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
                     >
                       <option value="recommended">Sort: Newest Verified</option>
@@ -724,15 +796,62 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                     <span>PKR 100k+</span>
                   </div>
                 </div>
+
+                {/* R6: room type, amenities, availability, COMSATS preset, favourites, map */}
+                <div className="pt-2 space-y-4">
+                  <div className="flex flex-wrap gap-3 items-center">
+                    <select
+                      className="p-3 bg-gray-50 border-none rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                      value={roomTypeFilter} aria-label="Filter by room type"
+                      onChange={(e) => setRoomTypeFilter(e.target.value as RoomType | 'All')}
+                    >
+                      <option value="All">All Room Types</option>
+                      <option value="single">Single</option>
+                      <option value="shared-2">Shared (2)</option>
+                      <option value="shared-3">Shared (3)</option>
+                      <option value="dorm">Dorm</option>
+                    </select>
+                    <label className="flex items-center gap-2 text-sm font-bold text-gray-600 cursor-pointer">
+                      <input type="checkbox" checked={bedsOnlyFilter} onChange={(e) => setBedsOnlyFilter(e.target.checked)} className="w-4 h-4 accent-blue-600" /> Beds available now
+                    </label>
+                    <label className="flex items-center gap-2 text-sm font-bold text-gray-600 cursor-pointer">
+                      <input type="checkbox" checked={nearComsatsFilter} onChange={(e) => setNearComsatsFilter(e.target.checked)} className="w-4 h-4 accent-blue-600" /> Near COMSATS (≤ 2 km)
+                    </label>
+                    {user && (
+                      <label className="flex items-center gap-2 text-sm font-bold text-gray-600 cursor-pointer">
+                        <input type="checkbox" checked={favOnlyFilter} onChange={(e) => setFavOnlyFilter(e.target.checked)} className="w-4 h-4 accent-blue-600" /> Favourites only
+                      </label>
+                    )}
+                    <Button variant={showMap ? 'secondary' : 'outline'} className="rounded-2xl gap-2" onClick={() => setShowMap(!showMap)}>
+                      <MapIcon className="w-4 h-4" /> {showMap ? 'Hide Map' : 'Show Map'}
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="text-xs font-black uppercase text-gray-400 tracking-widest py-2">Amenities:</span>
+                    {(['wifi', 'mess', 'backup-power', 'laundry', 'attached-bath', 'security', 'parking', 'study-room'] as Amenity[]).map(a => (
+                      <button key={a} type="button" aria-pressed={amenityFilters.includes(a)}
+                        onClick={() => setAmenityFilters(prev => prev.includes(a) ? prev.filter(x => x !== a) : [...prev, a])}
+                        className={`px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${amenityFilters.includes(a) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'}`}>{a}</button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </section>
+
+            {showMap && (
+              <section className="max-w-7xl mx-auto px-4 pt-8">
+                <Suspense fallback={<div className="w-full h-[420px] rounded-[2rem] bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-400">Loading map…</div>}>
+                  <HostelMap hostels={sortedHostels} onOpen={openHostel} />
+                </Suspense>
+              </section>
+            )}
 
             {/* Grid */}
             <section className="max-w-7xl mx-auto px-4 py-16">
               {sortedHostels.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
                   {sortedHostels.map(h => (
-<HostelCard hostel={h} avgRating={getAvgRating(h.id)} onOpen={(hostel) => { setSelectedHostel(hostel); setView('details'); window.scrollTo(0,0); }} />
+<HostelCard hostel={h} avgRating={getAvgRating(h.id)} onOpen={openHostel} isFavourite={favourites.has(h.id)} onToggleFavourite={handleToggleFavourite} />
                   ))}
                 </div>
               ) : (
@@ -740,7 +859,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                   <AlertCircle className="w-16 h-16 text-gray-200 mx-auto mb-4" />
                   <h3 className="text-xl font-bold text-gray-400">No Hostels Found</h3>
                   <p className="text-gray-400 mt-2">Try adjusting your budget or search terms.</p>
-                  <Button variant="ghost" className="mt-4" onClick={() => { setSearchQuery(''); setGenderFilter('All'); setMaxRentFilter(100000); }}>Clear Filters</Button>
+                  <Button variant="ghost" className="mt-4" onClick={() => { setSearchQuery(''); setGenderFilter('All'); setMaxRentFilter(100000); setRoomTypeFilter('All'); setAmenityFilters([]); setBedsOnlyFilter(false); setNearComsatsFilter(false); setFavOnlyFilter(false); }}>Clear Filters</Button>
                 </div>
               )}
             </section>
@@ -806,7 +925,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
 
         {view === 'details' && selectedHostel && (
           <div className="max-w-4xl mx-auto py-8 px-4 animate-in slide-in-from-bottom duration-500">
-            <button className="mb-8 flex items-center gap-1 text-sm font-black text-gray-400 hover:text-blue-600 transition-colors uppercase tracking-widest" onClick={() => setView('home')}>
+            <button className="mb-8 flex items-center gap-1 text-sm font-black text-gray-400 hover:text-blue-600 transition-colors uppercase tracking-widest" onClick={navigateHome}>
               <ChevronLeft className="w-5 h-5" /> {t.searchHostels}
             </button>
 
@@ -831,6 +950,10 @@ const [isSubmitting, setIsSubmitting] = useState(false);
                           )}
                           <span className="px-3 py-1 bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-widest rounded-full">{selectedHostel.gender === 'boys' ? 'Boys' : 'Girls'}</span>
                           <span className="px-3 py-1 bg-gray-100 text-gray-600 text-[10px] font-black uppercase tracking-widest rounded-full">{distanceKm(COMSATS.latitude, COMSATS.longitude, selectedHostel.latitude, selectedHostel.longitude)} km from COMSATS</span>
+                          <button type="button" onClick={() => handleToggleFavourite(selectedHostel)} aria-pressed={favourites.has(selectedHostel.id)}
+                            className={`px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-full flex items-center gap-1 ${favourites.has(selectedHostel.id) ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>
+                            <Heart className={`w-3 h-3 ${favourites.has(selectedHostel.id) ? 'fill-current' : ''}`} /> {favourites.has(selectedHostel.id) ? 'Saved' : 'Save'}
+                          </button>
                         </div>
                         <h2 className="text-3xl font-black mb-2 text-gray-900">{selectedHostel.name}</h2>
                         <p className="text-sm font-bold text-gray-500 mb-6">{selectedHostel.area} • {selectedHostel.address}</p>

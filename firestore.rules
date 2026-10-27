@@ -45,6 +45,11 @@ service cloud.firestore {
             && request.resource.data.role == resource.data.role
             && request.resource.data.get('status', 'active') == resource.data.get('status', 'active'));
       allow delete: if isAdmin();
+
+      // R6 favourites: a user may only read/write their own saved listings.
+      match /favourites/{listingId} {
+        allow read, write: if isSignedIn() && request.auth.uid == uid;
+      }
     }
 
     // ---- Hostel listings (PRD §8.2) ----
