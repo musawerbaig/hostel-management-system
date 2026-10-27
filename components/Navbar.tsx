@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck, LayoutDashboard, Mail, LogOut, Plus, X, Menu } from 'lucide-react';
+import { LayoutDashboard, Mail, LogOut, Plus, X, Menu } from 'lucide-react';
 import { Language, TranslationSet, User, View } from '../types';
 import { Button } from './Button';
 
@@ -21,9 +21,7 @@ export function Navbar({ lang, onLangChange, user, t, onNavigate, onLogout }: Pr
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
         <div className="max-w-7xl mx-auto h-16 px-4 flex items-center justify-between">
           <div className="flex items-center gap-2 cursor-pointer group" onClick={() => onNavigate('home')}>
-            <div className="bg-blue-600 p-1.5 rounded-lg group-hover:bg-blue-700 transition-colors">
-              <ShieldCheck className="text-white w-6 h-6" />
-            </div>
+            <img src="https://res.cloudinary.com/pgf6eco1/image/upload/v1793124248/hostela/brand/logo-mark.png" alt="Hostela logo" className="h-9 w-auto" />
             <h1 className="text-xl font-bold tracking-tight text-gray-900">Hostela</h1>
           </div>
 
