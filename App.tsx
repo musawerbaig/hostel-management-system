@@ -139,6 +139,8 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     })();
   }, [user]);
   const [view, setView] = useState<View>('home');
+  const viewRef = useRef<View>('home');
+  viewRef.current = view;
   const [seedMsg, setSeedMsg] = useState('');
   const [selectedHostel, setSelectedHostel] = useState<Hostel | null>(null);
   
@@ -193,17 +195,32 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     setView('home');
     window.location.hash = '';
   };
-  // Deep link on first load + back/forward buttons.
+  // Deep link on first load.
   useEffect(() => {
-    const fromHash = () => {
+    const m = window.location.hash.match(/^#\/hostel\/([^/]+)$/);
+    if (!m) return;
+    const found = hostels.find(h => h.id === m[1]);
+    if (found) { setSelectedHostel(found); setView('details'); }
+  }, [hostels]);
+
+  // Back/forward buttons. The earlier version ignored an empty hash, so
+  // pressing back from a deep-linked detail page changed the URL but left
+  // the detail on screen. Now an empty hash returns home — but only from
+  // the detail view, so dashboard views are never yanked away by a
+  // hash change.
+  useEffect(() => {
+    const onHashChange = () => {
       const m = window.location.hash.match(/^#\/hostel\/([^/]+)$/);
-      if (!m) return;
-      const found = hostels.find(h => h.id === m[1]);
-      if (found) { setSelectedHostel(found); setView('details'); }
+      if (m) {
+        const found = hostels.find(h => h.id === m[1]);
+        if (found) { setSelectedHostel(found); setView('details'); }
+      } else if (viewRef.current === 'details') {
+        setSelectedHostel(null);
+        setView('home');
+      }
     };
-    fromHash();
-    window.addEventListener('hashchange', fromHash);
-    return () => window.removeEventListener('hashchange', fromHash);
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
   }, [hostels]);
 
   const handleToggleFavourite = async (hostel: Hostel) => {
