@@ -1,16 +1,19 @@
-import { MapPin, Star, ChevronLeft, BedDouble } from 'lucide-react';
+import { MapPin, Star, ChevronLeft, BedDouble, Heart } from 'lucide-react';
 import { COMSATS, distanceKm, type Hostel } from '../types';
 
 interface Props {
   hostel: Hostel;
   avgRating: string; // 'New' when no visible reviews yet
   onOpen: (hostel: Hostel) => void;
+  // R6 favourites: shown only when a toggle handler is provided (signed in).
+  isFavourite?: boolean;
+  onToggleFavourite?: (hostel: Hostel) => void;
 }
 
 // Listing card used in the home grid — PRD §7.1 fields only: cover photo,
 // Verified badge, name, area, price per bed per month, mess note, distance
 // to COMSATS, beds free, gender, room types.
-export function HostelCard({ hostel, avgRating, onOpen }: Props) {
+export function HostelCard({ hostel, avgRating, onOpen, isFavourite, onToggleFavourite }: Props) {
   const km = distanceKm(COMSATS.latitude, COMSATS.longitude, hostel.latitude, hostel.longitude);
   return (
     <article
@@ -35,6 +38,17 @@ export function HostelCard({ hostel, avgRating, onOpen }: Props) {
             </span>
           )}
         </div>
+        {onToggleFavourite && (
+          <button
+            type="button"
+            aria-label={isFavourite ? `Remove ${hostel.name} from favourites` : `Save ${hostel.name} to favourites`}
+            aria-pressed={!!isFavourite}
+            className={`absolute top-4 right-4 w-10 h-10 rounded-full flex items-center justify-center shadow-sm transition-colors ${isFavourite ? 'bg-red-500 text-white' : 'bg-white/90 text-gray-500 hover:text-red-500'}`}
+            onClick={(e) => { e.stopPropagation(); onToggleFavourite(hostel); }}
+          >
+            <Heart className={`w-5 h-5 ${isFavourite ? 'fill-current' : ''}`} />
+          </button>
+        )}
         {avgRating !== 'New' && (
           <div className="absolute bottom-4 left-4">
             <span className="px-3 py-1 bg-white/90 backdrop-blur text-[10px] font-black text-gray-900 rounded-full flex items-center gap-1 shadow-sm">

@@ -150,6 +150,24 @@ export async function createListingContact(
   });
 }
 
+// R6 favourites: one document per saved listing under the student's own
+// profile (users/{uid}/favourites/{listingId}). The rules allow only the
+// owner of the profile to read or write them; listing ids are public.
+export async function fetchFavourites(uid: string): Promise<string[]> {
+  const snap = await getDocs(collection(db, 'users', uid, 'favourites'));
+  return snap.docs.map(d => d.id);
+}
+
+export async function toggleFavourite(uid: string, listingId: string, save: boolean): Promise<void> {
+  const ref = doc(db, 'users', uid, 'favourites', listingId);
+  if (save) {
+    await setDoc(ref, { listingId, savedAt: serverTimestamp() });
+  } else {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(ref);
+  }
+}
+
 // Demo seed for the admin dashboard — PRD §8 shapes. Each listing is created
 // as 'pending' (the only status the rules allow on create) and immediately
 // approved by the admin: status 'live' + verifiedAt/verifiedBy.
