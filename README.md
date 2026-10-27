@@ -1,72 +1,113 @@
 # Hostela — Student Hostel Marketplace
 
-A trustworthy student hostel marketplace connecting students and parents with verified hostel owners, with admin moderation before any listing goes live.
+A verified-only student hostel marketplace for COMSATS University Islamabad
+(Chak Shahzad campus first). Every listing is checked by an admin before it
+goes live. Students browse, filter, save favourites, view listings on a map,
+and send inquiries; owners submit listings and manage inquiries; admins run
+the verification checklist.
 
-Built by Muhammad Musawer (BS Computer Science, COMSATS University Islamabad). Scope: **Hostela PRD v2 — MVP** (listings, search, hostel details, student inquiry, owner submission, admin verification). Originally prototyped in Google AI Studio; upgraded in phases from Jan 2026 code.
+Built by Muhammad Musawer (BS Computer Science, COMSATS University
+Islamabad). Scope: **Hostela PRD v2 — MVP Scope**, which is the single source
+of truth — where code and PRD disagree, the PRD wins.
+
+Live site: https://hostela-5a2dc.web.app (Firebase project `hostela-5a2dc`,
+Spark plan). GitHub: `musawerbaig/hostel-management-system`.
 
 ## Run locally
 
-Prerequisites: Node.js
+Prerequisites: Node.js.
 
 ```bash
 npm install
-npm run dev     # Vite dev server on http://localhost:3000
+npm run dev     # Vite dev server
 npm run build   # production build check
+npm test        # vitest: checklist, haversine, docToModel
 ```
 
-No API keys are needed. The Firebase web config is in `firebase.ts` (project `hostela-5a2dc`); it identifies the project and is protected by the security rules below, not by secrecy.
+No secrets are needed to run it. The Firebase web config in `firebase.ts`
+identifies the project; it is a public identifier, not a password. Real
+protection comes from Firebase Authentication + the Firestore security rules
+in `firestore.rules` (Storage rules are legacy — uploads go to Cloudinary).
 
-## Accounts & roles (Phase 1 — real authentication)
+## Accounts & roles
 
-Sign-up / sign-in use **Firebase Authentication** (email + password). Every account gets a profile document at `users/{uid}` holding its `role`:
+Sign-up / sign-in use Firebase Authentication (email + password). Every
+account gets a profile document at `users/{uid}`:
 
-- **Student** — usable immediately; can browse and (Phase 2) send inquiries and gated reviews.
-- **Owner** — created with `isApproved: false`. An admin approves the owner before the security rules let them publish listings.
-- **Admin** — never self-serve. Admins are real accounts whose profile role is set manually (below).
+- **Student** — usable immediately; can browse, save favourites, send
+  inquiries, and leave one gated review per confirmed stay.
+- **Owner** — submits listings, which start at `pending` and go live only
+  after admin verification. Owners see their own listings at any status.
+- **Admin** — never self-serve. The first admin is made by editing a
+  `users/{uid}` document in the Firebase console: set `role` to `admin`.
 
-### Making the first admin
+## How it works (PRD v2)
 
-1. Create a normal account in the app (Sign up → Student) with the admin's email.
-2. Firebase console → Firestore Database → `users` → open that account's document → change `role` to `Admin` (and `isApproved` to `true`).
-3. Sign in again — the Admin dashboard now opens for that account.
+- **Inquiry only, no bookings/payments/chat.** A student inquiry carries
+  phone, move-in date, beds needed, and a message. The owner's phone is
+  revealed only after the inquiry is sent.
+- **Pricing is per bed per month**, plus a separate mess price and a
+  separate one-time security deposit. Availability is total beds / beds
+  free / available-from date.
+- **Verification (PRD §5)** is a remote document + consistency check — never
+  a claimed physical visit. The Admin HQ checklist gates Approve on four
+  rows: required fields complete, at least 3 photos, verification documents
+  on file, and an admin-confirmed reachable-owner test. Rejections carry a
+  reason the owner sees, and owners can resubmit. Admins can also suspend
+  and reinstate live listings.
+- **Reviews are gated**: one per inquiry the owner marked "stayed".
+- **Photos** go to Cloudinary (free tier, unsigned preset); verification
+  documents live only in the private `verificationDocs` collection (owner +
+  admin read) — never in the public listing document.
+- **Notifications (R5)**: when an inquiry is saved, the listing owner is
+  emailed within a minute via EmailJS (free tier, 200/month). The owner's
+  email is never public: it lives in a private `listingContacts/{listingId}`
+  document that a student unlocks only through a genuine inquiry, enforced
+  by the Firestore rules. Cloud Functions were deliberately avoided so the
+  project stays on the Firebase Spark plan.
+- **Student completeness (R6)**: favourites, room-type / amenity /
+  beds-available / near-COMSATS filters, a Leaflet + OpenStreetMap pin map
+  (lazy-loaded), and per-listing URLs (`#/hostel/{id}`) so listings are
+  shareable. Distances to COMSATS are computed with haversine, never stored.
+- **Data model (PRD §8)**: exactly four Firestore collections — `users`,
+  `hostels`, `inquiries`, `reviews` — plus the private `listingContacts`
+  and `verificationDocs` companions. Named database id is `default`
+  (not `(default)`); the app calls `getFirestore(app, "default")`.
 
-Approving an owner is the same idea: set `isApproved` to `true` on their `users` document. (An in-app approval screen arrives in a later phase.)
-
-## Security rules
-
-`firestore.rules` and `storage.rules` are the real security boundary — deploy them before inviting real users:
+## Deploy
 
 ```bash
-firebase deploy --only firestore:rules,storage
+firebase deploy --only hosting,firestore:rules --project hostela-5a2dc
 ```
 
-They enforce: public reads only for approved listings; owners see/edit only their own listings and can never approve them; profiles can't self-promote role or approval; everything else is closed by default.
+If the CLI login has expired, `firebase login --no-localhost` prints a URL;
+completing it in a browser yields an authorization code to redeem with
+`firebase login <code>`. Note: the login credential lives in a temp
+configstore and does not survive VM replacement — re-login is expected.
+
+## Roadmap status
+
+- **R1** — rules-shaped queries, mock fallbacks removed, rules hardened
+- **R2** — exact PRD §8 schema migration, persisting edit/delete, OpenStreetMap embed
+- **R3a** — full owner listing form, pause / request re-review
+- **R3b** — Cloudinary photo + verification-doc uploads, privacy split
+- **R4** — verification checklist, reject-with-reason, suspend/reinstate, counts
+- **R5** — owner email notifications via EmailJS + private contact reveal
+- **R6** — favourites, filters, Leaflet map, per-listing URLs, SEO
+- **R7** — launch hardening: tests, orphan cleanup, README, dead-code sweep
+
+Known gaps: deleting a listing does not delete its Cloudinary files
+(orphans are cleaned periodically from the Cloudinary dashboard); the 3–10
+photo count is enforced by the verification checklist, not by the upload form.
 
 ## ⚠️ Security history (read this)
 
-An earlier version of this repo committed two things that should never have been public:
+An earlier version committed two things that should never have been public:
 
-1. Hardcoded admin emails + PINs in `store.ts` — **removed in Phase 1**. Anyone who saw them could impersonate an admin; the PIN system is gone entirely.
-2. A `.env.local` file containing a Gemini API key — **removed in Phase 1**. The app never used that key, but it still exists in old Git history, so **rotate/revoke it in Google AI Studio** and treat it as leaked.
+1. Hardcoded admin emails + PINs — **removed in Phase 1**. The PIN system is
+   gone entirely.
+2. A `.env.local` file containing a Gemini API key — **removed in Phase 1**
+   and the key was deleted in AI Studio. Treat anything in old Git history
+   as leaked.
 
-Never commit `.env.local`, service-account keys, or passwords. `.env.example` shows the pattern for future secrets.
-
-## Roadmap
-
-- **Phase 1 (done)** — remove secrets/PINs, real Firebase Auth + roles, security rules
-- **Phase 2 (done)** — inquiry flow that reaches the owner, reviews saved to Firestore and gated, real photo uploads
-- **Phase 3 (done)** — `App.tsx` split into components, Tailwind installed (CDN dropped), Islamabad/COMSATS seed listings + sorting, Firebase Hosting deploy
-
-## Phase 3 — structure & launch prep
-
-- **Components** (`components/`): `Navbar`, `Footer`, `HostelCard`, `ReviewsSection`, `InquiryPanel`, `InquiriesInbox`, `MyInquiriesView` were extracted from the old 1,400-line `App.tsx`, which now just orchestrates state and screens.
-- **Tailwind CSS v4** is installed and built locally (`@tailwindcss/vite` + `index.css`); the Play CDN script and the esm.sh import map were removed from `index.html`.
-- **Seed data** (`seed.ts`): 12 demo listings around COMSATS Islamabad (Chak Shahzad, Shahzad Town, Tarlai, Khanna Pul, H-9, I-10…) with approximate `distanceKm` from campus. An admin sees **Load Islamabad Demo Listings** on the dashboard — it creates and approves them in Firestore, skipping names that already exist. Demo listings use generic names and placeholder phone numbers; replace them with real, verified owners before any public launch.
-- **Sorting** on the home page: Recommended, Rent low→high / high→low, Top Rated, and Nearest to COMSATS (uses `distanceKm` when present).
-- **Hosting**: `firebase.json` now includes a Hosting section (`dist` + SPA rewrite). Deploy with `firebase deploy --only hosting` → https://hostela-5a2dc.web.app
-
-## Phase 2 — how the loop works
-
-1. **Inquiry (not booking).** On any listing, a signed-in student sends an inquiry (message, optional phone, optional move-in timing). It is stored in the `inquiries` collection with status `new` and appears in the owner's dashboard inbox. The owner moves it through `contacted` → `stayed` → `closed`; students track their own under **My Inquiries**. A WhatsApp-the-owner button sits alongside for direct chat.
-2. **Gated reviews.** Reviews live in the `reviews` collection and are public to read. Writing one requires an inquiry the owner marked `stayed` — the Firestore rules check the inquiry document server-side, and the review's document id **is** the inquiry id, so there is exactly one review per confirmed stay. No confirmed stay, no review.
-3. **Photo uploads.** The Add Hostel form uploads chosen photos to Firebase Storage (`hostel-photos/{ownerUid}/…`) before saving the listing. ⚠️ This project's Storage bucket activates only on the **Blaze plan**; until then the form offers to submit the listing without photos instead of failing silently.
+Never commit `.env.local`, service-account keys, or passwords.
