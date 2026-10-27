@@ -102,6 +102,40 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ---- Listing contacts (R5, private) ----
+    // One companion document per listing holding the owner's email. It is
+    // NOT readable by the public: owners and admins always, plus any
+    // student who has genuinely inquired about this listing (their uid is
+    // added to allowedReaders by the rules-checked reveal in notifications.ts).
+    match /listingContacts/{listingId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && (resource.data.ownerId == request.auth.uid
+            || request.auth.uid in resource.data.get('allowedReaders', [])));
+      allow create: if isActive()
+        && (isOwner() || isAdmin())
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerEmail is string
+        && request.resource.data.allowedReaders is list
+        && request.resource.data.inquiryIds is list;
+      // Owners may edit their own contact document. A student may ONLY
+      // append their own uid and one inquiry id that the rules verify
+      // belongs to them and to this listing's owner — the reveal step.
+      allow update: if isAdmin()
+        || (isSignedIn() && resource.data.ownerId == request.auth.uid)
+        || (isSignedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['allowedReaders', 'inquiryIds', 'lastInquiryId', 'updatedAt'])
+            && request.resource.data.allowedReaders.size() == resource.data.allowedReaders.size() + 1
+            && request.resource.data.allowedReaders.hasAll(resource.data.allowedReaders)
+            && request.auth.uid in request.resource.data.allowedReaders
+            && request.resource.data.inquiryIds.size() == resource.data.inquiryIds.size() + 1
+            && request.resource.data.inquiryIds.hasAll(resource.data.inquiryIds)
+            && request.resource.data.lastInquiryId in request.resource.data.inquiryIds
+            && get(/databases/$(database)/documents/inquiries/$(request.resource.data.lastInquiryId)).data.studentId == request.auth.uid
+            && get(/databases/$(database)/documents/inquiries/$(request.resource.data.lastInquiryId)).data.ownerId == resource.data.ownerId);
+      allow delete: if isAdmin()
+        || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+    }
+
     // ---- Student inquiries (PRD §8.3) ----
     match /inquiries/{inquiryId} {
       // Visible only to the student who sent it, the hostel's owner, admins.

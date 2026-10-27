@@ -5,8 +5,9 @@ import { translations } from './translations';
 import { Language, User, Hostel, Review, Gender, RoomType, Amenity, Inquiry, InquiryStatus, View, COMSATS, distanceKm } from './types';
 
 import { signUpWithEmail, signInWithEmail, signOutUser, sendPasswordReset, watchAuth, fetchProfile } from './auth';
-import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, fetchVerificationDocs, docToModel } from './services';
+import { submitInquiry, fetchInquiriesForStudent, fetchInquiriesForOwner, fetchAllInquiries, updateInquiryStatus, fetchAllReviews, submitReview, seedIslamabadListings, saveVerificationDocs, fetchVerificationDocs, createListingContact, docToModel } from './services';
 import { uploadHostelPhotos, uploadVerificationDocs } from './uploads';
+import { notifyOwnerOfInquiry } from './notifications';
 import { Button } from './components/Button';
 import { Navbar } from './components/Navbar';
 import { HostelCard } from './components/HostelCard';
@@ -288,7 +289,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     if (!user || user.role !== 'admin') return;
     setSeedMsg('Adding demo listings…');
     try {
-      const added = await seedIslamabadListings(user.id, hostels.map(h => h.name));
+      const added = await seedIslamabadListings(user.id, hostels.map(h => h.name), user.email);
       const snap = await getDocs(collection(db, "hostels"));
       setHostels(snap.docs.map(d => docToModel(d.id, d.data()) as Hostel));
       setSeedMsg(added > 0 ? `${added} demo listings added and verified.` : 'All demo listings are already loaded.');
@@ -382,6 +383,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     setPendingDeleteId(null);
     try {
       await deleteDoc(doc(db, "hostels", id));
+      try { await deleteDoc(doc(db, "listingContacts", id)); } catch { /* contact doc may not exist */ }
       setHostels(prev => prev.filter(h => h.id !== id));
     } catch (error) {
       console.error("Delete error:", error);
@@ -441,6 +443,9 @@ const [isSubmitting, setIsSubmitting] = useState(false);
       });
       setInquiries(prev => [saved, ...prev]);
       setInquirySent(true);
+      // R5: email the owner now (fire-and-forget; the inquiry is saved
+      // regardless of whether the email goes through).
+      void notifyOwnerOfInquiry(saved);
       // Owner phone reveal (PRD §11): the owner's number comes from their
       // profile, shown only in the confirmation after an inquiry is sent.
       try {
@@ -531,6 +536,13 @@ const [isSubmitting, setIsSubmitting] = useState(false);
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      // R5: private contact document so future inquirers can notify the
+      // owner by email without the address ever being public.
+      try {
+        await createListingContact(listingRef.id, user.id, user.email);
+      } catch (contactErr) {
+        console.warn('Listing contact document failed:', contactErr);
+      }
       // Verification documents (best effort — the listing is already saved).
       if (tempDocFiles.length > 0) {
         try {

@@ -133,6 +133,23 @@ export async function fetchVerificationDocs(listingId: string): Promise<string[]
   return Array.isArray(urls) ? (urls as string[]) : [];
 }
 
+// Private contact document for one listing (R5). Created by the owner
+// at listing time; students unlock it only via a genuine inquiry (rules).
+export async function createListingContact(
+  listingId: string,
+  ownerId: string,
+  ownerEmail: string,
+): Promise<void> {
+  await setDoc(doc(db, 'listingContacts', listingId), {
+    ownerId,
+    ownerEmail,
+    allowedReaders: [],
+    inquiryIds: [],
+    lastInquiryId: '',
+    updatedAt: serverTimestamp(),
+  });
+}
+
 // Demo seed for the admin dashboard — PRD §8 shapes. Each listing is created
 // as 'pending' (the only status the rules allow on create) and immediately
 // approved by the admin: status 'live' + verifiedAt/verifiedBy.
@@ -140,6 +157,7 @@ export async function fetchVerificationDocs(listingId: string): Promise<string[]
 export async function seedIslamabadListings(
   adminId: string,
   existingNames: string[],
+  adminEmail?: string,
 ): Promise<number> {
   let added = 0;
   for (const listing of islamabadSeedListings) {
@@ -157,6 +175,9 @@ export async function seedIslamabadListings(
       verifiedBy: adminId,
       updatedAt: serverTimestamp(),
     });
+    if (adminEmail) {
+      await createListingContact(ref.id, adminId, adminEmail);
+    }
     added++;
   }
   return added;
